@@ -61,6 +61,7 @@ class SetupScriptTests(unittest.TestCase):
         self.assertNotIn("print('依赖导入验证通过')", script)
         self.assertIn("ENABLE_SCHEDULED_TASK", script)
         self.assertIn("DeleteTask($TaskName, 0)", script)
+        self.assertIn('手动运行：& `"$PythonExePath`" -X utf8', script)
         self.assertNotIn("pip show", script)
 
     def test_scheduler_enables_utf8_for_child_process(self):

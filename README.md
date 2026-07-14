@@ -253,7 +253,7 @@ nano config.json
 
 ```powershell
 # Windows
-.\.venv\Scripts\python.exe main.py
+.\.venv\Scripts\python.exe -X utf8 main.py
 ```
 
 ```bash
