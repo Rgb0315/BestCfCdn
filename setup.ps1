@@ -68,9 +68,9 @@ Write-Host "工作目录: $ScriptDir`n" -ForegroundColor Gray
 
 # ==================== 计划任务配置 ====================
 $TaskName = "Cloudflare IP 优选"
-$TaskIntervalMinutes = 5
+$TaskIntervalMinutes = 15
 $PythonExePath = $null
-$PythonScriptPath = Join-Path $ScriptDir "main.py"
+$PythonScriptPath = Join-Path $ScriptDir "scheduled_run.py"
 $WorkingDirectory = $ScriptDir
 # ====================================================
 
@@ -79,9 +79,9 @@ function Refresh-EnvPath {
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
 }
 
-# ---------- 计算下一个整点5分钟时间（用于首次触发）----------
+# ---------- 计算下一个整15分钟时间（用于首次触发）----------
 function Get-NextAlignedTime {
-    param([int]$IntervalMinutes = 5)
+    param([int]$IntervalMinutes = 15)
     $now = Get-Date
     $currentTotalMinutes = $now.Hour * 60 + $now.Minute
     $nextTotalMinutes = [math]::Ceiling($currentTotalMinutes / $IntervalMinutes) * $IntervalMinutes
@@ -203,20 +203,21 @@ config.json
 git_sync.ps1
 git_sync.sh
 __pycache__/
+.cfnb_schedule.lock
+cron.log
 "@ | Out-File -FilePath $GitignorePath -Encoding utf8 -Force
 Write-Host "✅ .gitignore 已创建`n" -ForegroundColor Gray
 
-# ---------- 验证 main.py 是否存在 ----------
-if (-not (Test-Path $PythonScriptPath)) {
-    Write-Host "❌ 错误：未找到 main.py 文件，请确保脚本位于正确目录。" -ForegroundColor Red
-    Write-Host "   预期位置: $PythonScriptPath" -ForegroundColor Yellow
+# ---------- 验证调度入口和主程序是否存在 ----------
+if (-not (Test-Path $PythonScriptPath) -or -not (Test-Path (Join-Path $ScriptDir "main.py"))) {
+    Write-Host "❌ 错误：未找到 scheduled_run.py 或 main.py。" -ForegroundColor Red
     Read-Host "按 Enter 键退出"
     exit 1
 }
 
 # ========== 创建计划任务（优先 COM 对象，失败后回退 schtasks） ==========
 Write-Host "正在配置 Windows 计划任务 '$TaskName' ..." -ForegroundColor Yellow
-Write-Host "   首次运行时间: $startBoundaryStr (之后每 $TaskIntervalMinutes 分钟永久重复，无限期)" -ForegroundColor Gray
+Write-Host "   首次检查时间: $startBoundaryStr（CF忙时每15分钟，非忙时每30分钟）" -ForegroundColor Gray
 
 try {
     $taskService = New-Object -ComObject Schedule.Service
@@ -226,7 +227,7 @@ try {
     try { $rootFolder.DeleteTask($TaskName, 0) } catch { }
 
     $taskDefinition = $taskService.NewTask(0)
-    $taskDefinition.RegistrationInfo.Description = "每$TaskIntervalMinutes分钟运行一次 Cloudflare IP 优选工具（永久重复）"
+    $taskDefinition.RegistrationInfo.Description = "Cloudflare CDN 中国忙时每15分钟、非忙时每30分钟优选"
 
     $taskDefinition.Principal.LogonType = 5
     $taskDefinition.Principal.RunLevel = 1
@@ -235,7 +236,7 @@ try {
     $taskDefinition.Settings.StartWhenAvailable = $false
     $taskDefinition.Settings.AllowHardTerminate = $true
     $taskDefinition.Settings.ExecutionTimeLimit = "PT72H"
-    $taskDefinition.Settings.MultipleInstances = 3
+    $taskDefinition.Settings.MultipleInstances = 2
     $taskDefinition.Settings.Priority = 0
     $taskDefinition.Settings.DisallowStartIfOnBatteries = $true
     $taskDefinition.Settings.StopIfGoingOnBatteries = $true
@@ -262,7 +263,7 @@ try {
 
     Write-Host "✅ 计划任务 '$TaskName' 创建成功！" -ForegroundColor Green
     Write-Host "   创建方式: COM 对象" -ForegroundColor Gray
-    Write-Host "   触发器: $startBoundaryStr 首次运行，之后每 $TaskIntervalMinutes 分钟永久重复（无限期）" -ForegroundColor Gray
+    Write-Host "   触发器: 每15分钟检查；忙时执行每次，非忙时每隔一次执行" -ForegroundColor Gray
     Write-Host "   执行命令: `"$PythonExePath`" `"$PythonScriptPath`"" -ForegroundColor Gray
     Write-Host "   运行账户: SYSTEM" -ForegroundColor Gray
     Write-Host "   电池设置: 仅交流电源时运行" -ForegroundColor Gray
@@ -275,11 +276,10 @@ try {
         "/Create",
         "/TN", $TaskName,
         "/TR", "`"$PythonExePath`" `"$PythonScriptPath`"",
-        "/SC", "ONCE",
+        "/SC", "MINUTE",
+        "/MO", $TaskIntervalMinutes,
         "/ST", $startTimeDisplay,
         "/SD", $firstRunTime.ToString("yyyy/MM/dd"),
-        "/RI", $TaskIntervalMinutes,
-        "/DU", "9999/12/31",
         "/RU", "SYSTEM",
         "/F",
         "/RL", "HIGHEST"
@@ -304,7 +304,7 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "👉 接下来请完成以下手动配置步骤：" -ForegroundColor White
 Write-Host "1. 编辑 config.json，填写 WxPusher 的 APP_TOKEN 和 UID（如需通知）" -ForegroundColor White
-Write-Host "2. 编辑 git_sync.ps1，填写你的 GitHub Token、用户名及仓库名" -ForegroundColor White
+Write-Host "2. 在 config.json 填写 GITHUB_SYNC_TOKEN、GITHUB_SYNC_REPOSITORY 和唯一的 GITHUB_SYNC_FIELD_ID" -ForegroundColor White
 Write-Host "3. 可选：在'任务计划程序' (taskschd.msc) 中查看或调整任务" -ForegroundColor Gray
 Write-Host "4. 手动运行一次测试：python main.py（或等待计划任务自动执行）" -ForegroundColor Green
 Write-Host ""
@@ -312,7 +312,7 @@ Write-Host ""
 $response = Read-Host "是否立即运行一次 main.py 进行测试？(Y/N)"
 if ($response -eq 'Y' -or $response -eq 'y') {
     Write-Host "正在运行 main.py ..." -ForegroundColor Cyan
-    & $PythonExePath $PythonScriptPath
+    & $PythonExePath (Join-Path $ScriptDir "main.py")
 }
 
 Read-Host "`n部署完成，按 Enter 键退出"

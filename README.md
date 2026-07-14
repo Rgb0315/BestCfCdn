@@ -13,8 +13,8 @@
 
 > [!IMPORTANT]
 > **跨平台支持**：本工具同时兼容 **Windows** 和 **Linux** 操作系统。
-> - Windows 自动推送依赖 PowerShell 脚本 `git_sync.ps1`
-> - Linux 自动推送依赖 Bash 脚本 `git_sync.sh`
+> - `github_sync.py` 通过 GitHub Contents API 并发安全地合并多终端结果
+> - `git_sync.ps1` / `git_sync.sh` 保留为手动同步入口
 
 ---
 
@@ -49,9 +49,9 @@
 | 🔒 **强制直连模式** | 可配置开关，一键清除系统代理，确保所有测试流量走直连 |
 | ☁️ **Cloudflare DNS 更新** | 原子批量替换同名 A/TXT 记录 |
 | 📬 **微信实时通知** | 集成 WxPusher，异常/结果推送 |
-| 🔄 **定时自动运行** | Windows 计划任务 / Linux cron，每 5 分钟 |
+| 🔄 **峰谷定时运行** | 中国 CF CDN 忙时每 15 分钟，非忙时每 30 分钟 |
 | 🚀 **一键部署** | `setup.ps1` / `setup.sh` 自动安装依赖并配置 |
-| 📤 **GitHub 自动同步** | `ip.txt` 推送至仓库，方便订阅 |
+| 📤 **多终端安全同步** | 每台终端只替换自己的 5 行，冲突时自动拉取并重新合并 |
 | 🔒 **隐私保护** | `.gitignore` 忽略敏感文件 |
 | 🖥️ **跨平台兼容** | 同时支持 Windows 和 Linux |
 | 🔧 **Fork 修复** | 内置 `update_fork.ps1` / `update_fork.sh`，解决 fork 后的历史冲突与认证问题 |
@@ -64,8 +64,10 @@
 | :--- | :--- |
 | `main.py` | 核心优选程序（抓取、测试、筛选、更新、推送） |
 | `config.json` | 所有运行参数的配置文件（含详细注释） |
-| `git_sync.ps1` | Windows 推送脚本（强制推送 `ip.txt` 到 GitHub） |
-| `git_sync.sh` | Linux 推送脚本（强制推送 `ip.txt` 到 GitHub） |
+| `github_sync.py` | GitHub 多终端并发安全合并程序 |
+| `scheduled_run.py` | 按中国 CF CDN 峰谷时段运行并防止任务重叠 |
+| `git_sync.ps1` | Windows 手动同步入口 |
+| `git_sync.sh` | Linux 手动同步入口 |
 | `setup.ps1` | Windows 一键部署脚本（安装依赖并配置计划任务） |
 | `setup.sh` | Linux 一键部署脚本（安装依赖并配置 cron） |
 | `ip.txt` | 最终优选节点列表（每次运行覆盖） |
@@ -101,7 +103,7 @@
 2. **配置各项令牌（见下一节）**  
    根据需求获取并填写 GitHub Token、Cloudflare API Token 和 WxPusher 凭证。
 
-> 💡 部署脚本会自动安装 `requests`、`aiohttp`、`brotlicffi` 三个 Python 依赖、创建 `.gitignore` 并配置定时任务（每 5 分钟整点运行）。
+> 💡 部署脚本会自动安装 `requests`、`aiohttp`、`brotlicffi` 三个 Python 依赖、创建 `.gitignore`，并配置中国 CF CDN 忙时 15 分钟、非忙时 30 分钟的定时任务。
 
 ---
 
@@ -116,7 +118,7 @@
 | **3.** **Expiration 必须选 `No expiration`** | **3.** 权限已自动填好（区域 - DNS - 编辑），区域资源选择你的域名 | **3.** 复制保存 AppToken（仅显示一次） |
 | **4.** Select scopes: 仅勾选 **repo**（自动勾全） | **4.** 点击 继续以显示摘要 → 创建令牌 | **4.** 左侧“关注应用”→微信扫码关注公众号 |
 | **5.** Generate token，保存 | **5.** 立即复制并保存令牌（仅显示一次） | **5.** 公众号菜单“我的”→“我的UID”获取 UID |
-| 填入 `git_sync.ps1` / `git_sync.sh` 的 `github_token` | 填入 `config.json` 的 `CF_API_TOKEN` 和 `CF_ZONE_ID` | 填入 `config.json` 的 `WXPUSHER_APP_TOKEN` 和 `WXPUSHER_UIDS` |
+| 填入 `config.json` 的 `GITHUB_SYNC_TOKEN` | 填入 `config.json` 的 `CF_API_TOKEN` 和 `CF_ZONE_ID` | 填入 `config.json` 的 `WXPUSHER_APP_TOKEN` 和 `WXPUSHER_UIDS` |
 
 > 💡 若不需要某项功能，可跳过对应步骤或在配置中关闭开关：  
 > - 无需微信通知：`config.json` 中设 `ENABLE_WXPUSHER: false`  
@@ -139,8 +141,8 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 # 3. 运行部署脚本
 .\setup.ps1
 
-# 4. 编辑推送脚本，填入 GitHub 令牌等信息
-notepad git_sync.ps1
+# 4. 编辑配置，填入 GitHub 令牌、仓库和终端名称
+notepad config.json
 
 # 5. 测试运行
 python main.py
@@ -160,8 +162,8 @@ chmod +x setup.sh
 # 3. 运行部署脚本（需要 sudo 安装软件包）
 sudo ./setup.sh
 
-# 4. 编辑推送脚本，填入 GitHub 令牌等信息
-nano git_sync.sh
+# 4. 编辑配置，填入 GitHub 令牌、仓库和终端名称
+nano config.json
 
 # 5. 测试运行
 python3 main.py
@@ -181,8 +183,8 @@ python3 main.py
 4. （可选）手动创建计划任务：
    - 按 `Win + R`，输入 `taskschd.msc` 打开任务计划程序。
    - 创建任务，名称 `Cloudflare IP 优选`，勾选“不管用户是否登录都要运行”和“使用最高权限运行”。
-   - 触发器：新建 → 开始任务“按预定计划” → 设置“一次”，开始时间为下一个整5分钟时刻；高级设置中勾选“重复任务间隔”，选择“5分钟”，持续时间“无限期”。
-   - 操作：新建 → 操作“启动程序”，程序填写 `python.exe` 路径，参数填写 `main.py` 完整路径，起始于填写项目目录。
+   - 触发器：新建 → 开始任务“按预定计划” → 设置“一次”，开始时间为下一个整15分钟时刻；高级设置中勾选“重复任务间隔”，选择“15分钟”，持续时间“无限期”。
+   - 操作：新建 → 操作“启动程序”，程序填写 `python.exe` 路径，参数填写 `scheduled_run.py` 完整路径，起始于填写项目目录。
    - 在 **“设置”** 选项卡中，将 **“优先级”** 下拉框设为 **“高”**。
    - 点击确定，输入 Windows 登录密码保存。
 
@@ -203,7 +205,7 @@ python3 main.py
    ```
 4. （可选）添加 cron 任务：
    ```bash
-   (crontab -l 2>/dev/null; echo "*/5 * * * * cd $(pwd) && nice -n -10 /usr/bin/python3 $(pwd)/main.py >> $(pwd)/cron.log 2>&1") | crontab -
+   (crontab -l 2>/dev/null; echo "*/15 * * * * cd $(pwd) && nice -n -10 /usr/bin/python3 $(pwd)/scheduled_run.py >> $(pwd)/cron.log 2>&1") | crontab -
    ```
 5. 验证：`crontab -l`
 
@@ -239,8 +241,12 @@ python3 main.py
 
 | 平台 | 方式 | 行为 |
 | :--- | :--- | :--- |
-| Windows | 计划任务 `Cloudflare IP 优选` | 从下一个整 5 分钟开始，之后每 5 分钟**永久重复** |
-| Linux | cron 定时任务 | 分钟字段为 `*/5`，整点对齐 |
+| Windows | 计划任务 `Cloudflare IP 优选` | 每 15 分钟调用调度入口 |
+| Linux | cron 定时任务 | 分钟字段为 `*/15`，整点对齐 |
+
+默认按北京时间划分：`18:00–24:00` 为 Cloudflare CDN 中国忙时，每 15 分钟筛选；其余时间每 30 分钟筛选。任务每 15 分钟唤醒一次，非忙时的 `:15` 和 `:45` 自动跳过。若上次筛选尚未结束，本轮也会自动跳过，避免重叠测速。
+
+该默认窗口是工程化覆盖范围：[Cloudflare 官方说明](https://blog.cloudflare.com/http-requests-on-cloudflare-radar/)中，Radar 的 HTTP 字节指标对应 CDN 流量，且晚间内容流量会快速上升并在当地约 22 点达到峰值；中国区域可在 [Cloudflare Radar](https://radar.cloudflare.com/traffic/cn) 持续观察。实际网络不同，可通过 `SCHEDULE_CF_BUSY_START_HOUR` 和 `SCHEDULE_CF_BUSY_END_HOUR` 调整。
 
 **日志查看**：
 - Windows：任务计划程序中查看历史记录。
@@ -260,7 +266,7 @@ python3 main.py
 | 参数 | 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
 | `USE_GLOBAL_MODE` | `boolean` | `true` | `true`=全局优选；`false`=分国家优选 |
-| `GLOBAL_TOP_N` | `int` | `15` | 全局模式保留节点数 |
+| `GLOBAL_TOP_N` | `int` | `5` | 全局模式保留节点数 |
 | `PER_COUNTRY_TOP_N` | `int` | `1` | 分国家模式每国保留节点数 |
 | `BANDWIDTH_CANDIDATES` | `int` | `150` | 进入测速的候选节点数 |
 | `DNS_UPDATE_TARGET_COUNT` | `int` | `15` | DNS 更新时写入的最大 IP 数量，独立于筛选模式 |
@@ -452,6 +458,29 @@ python3 main.py
 | `GITHUB_SYNC_RETRY_DELAY` | `int` | `3` | GitHub 推送重试间隔（秒） |
 | `GIT_SYNC_PROCESS_TIMEOUT` | `int` | `180` | Git 同步子进程最大运行时间（秒） |
 
+**多终端 GitHub 同步参数**
+
+| 参数 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `GITHUB_SYNC_TOKEN` | `string` | 占位符 | GitHub Token，不要提交真实值 |
+| `GITHUB_SYNC_REPOSITORY` | `string` | 占位符 | 目标仓库，格式 `owner/repo` |
+| `GITHUB_SYNC_BRANCH` | `string` | `main` | 目标分支 |
+| `GITHUB_SYNC_REMOTE_PATH` | `string` | `ip.txt` | 远端汇总文件路径 |
+| `GITHUB_SYNC_FIELD_ID` | `string` | 占位符 | 每台终端唯一名称 |
+| `GITHUB_SYNC_TOP_N` | `int` | `5` | 每台终端最多上报节点数 |
+| `GITHUB_SYNC_CONFLICT_RETRIES` | `int` | `5` | SHA 冲突时重新拉取合并次数 |
+
+**Cloudflare CDN 中国峰谷调度参数**
+
+| 参数 | 类型 | 默认值 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `SCHEDULE_TIMEZONE_OFFSET_HOURS` | `number` | `8` | 调度时区，默认北京时间 |
+| `SCHEDULE_CF_BUSY_START_HOUR` | `int` | `18` | CF CDN 中国忙时开始（含） |
+| `SCHEDULE_CF_BUSY_END_HOUR` | `int` | `24` | CF CDN 中国忙时结束（不含） |
+| `SCHEDULE_BUSY_INTERVAL_MINUTES` | `int` | `15` | 忙时筛选间隔 |
+| `SCHEDULE_OFFPEAK_INTERVAL_MINUTES` | `int` | `30` | 非忙时筛选间隔 |
+| `SCHEDULE_LOCK_STALE_MINUTES` | `int` | `180` | 防重叠锁失效时间 |
+
 #### 广告植入参数
 
 | 参数 | 类型 | 默认值 | 说明 |
@@ -560,104 +589,49 @@ python3 main.py
 
 ## 📤 配置 GitHub 自动同步
 
-本工具支持每次运行后将 `ip.txt` 自动推送到你指定的 GitHub 仓库，方便通过 Raw 链接订阅节点列表。
+同步不再执行 `git pull` 或 `git push --force`，而是通过 GitHub Contents API 读取远端文件当前版本、只替换本终端节点，再带文件 SHA 提交。若其他终端先一步更新导致 SHA 冲突，程序会重新拉取并再次合并。
 
-### 第一步：创建 GitHub 仓库
+### 第一步：配置每台终端
 
-1. 登录 GitHub，点击右上角 `+` → **New repository**。
-2. **Repository name** 可任意填写（如 `cf-ip`）。
-3. 仓库类型选择 **Private**（推荐）或 Public。
-4. **不要**勾选 “Add a README file”、“.gitignore” 等初始化选项。
-5. 点击 **Create repository**。
+每台终端编辑自己的 `config.json`：
 
-### 第二步：初始化本地仓库并关联远程
-
-> 💡 **如果你是通过网页下载的 ZIP 压缩包解压的**，必须执行以下全部命令。  
-> **如果你是用 `git clone` 命令下载的**，本地仓库已自动关联远程，可跳过此步，直接进入第三步。
-
-根据你的操作系统选择对应标签页的命令，**在项目根目录**下打开终端执行：
-
-#### **Windows（PowerShell）**
-
-```powershell
-# 1. 初始化仓库（若尚未初始化）
-git init
-
-# 2. 移除旧 origin 并添加你的远程地址（替换为你的仓库链接）
-$null = git remote remove origin 2>&1
-git remote add origin https://github.com/你的用户名/仓库名.git
-
-# 3. 拉取远程数据并切换到默认分支（先 main 后 master）
-git fetch origin
-$null = git checkout main 2>&1
-if ($LASTEXITCODE -ne 0) { $null = git checkout master 2>&1 }
+```json
+"GITHUB_SYNC_TOKEN": "你的 GitHub Token",
+"GITHUB_SYNC_REPOSITORY": "uxudjs/BestCfCdn",
+"GITHUB_SYNC_BRANCH": "main",
+"GITHUB_SYNC_REMOTE_PATH": "ip.txt",
+"GITHUB_SYNC_FIELD_ID": "济南联通",
+"GITHUB_SYNC_TOP_N": 5
 ```
 
-#### **Linux （Bash）**
+`GITHUB_SYNC_FIELD_ID` 必须在所有终端中唯一，例如另一台填写 `郑州教育网`。Fine-grained PAT 仅需给目标仓库授予 **Contents: Read and write**；classic PAT 需要 `repo` 权限。
 
-```bash
-# 1. 初始化仓库（若尚未初始化）
-git init
-
-# 2. 移除旧 origin 并添加你的远程地址（替换为你的仓库链接）
-git remote remove origin 2>/dev/null
-git remote add origin https://github.com/你的用户名/仓库名.git
-
-# 3. 拉取远程数据，对齐远程默认分支名
-git fetch origin
-git checkout -b temp-branch 2>/dev/null || git checkout main 2>/dev/null || git checkout master 2>/dev/null
-git branch -M $(git remote show origin | grep "HEAD branch" | cut -d " " -f5) 2>/dev/null || git branch -M main
-```
-
-> ⚠️ **如果远程仓库是完全空的**（创建时未勾选任何初始化文件，无任何分支），上述命令会因没有可检出的分支而失败。  
-> **解决方法**：先手动创建一个初始提交再重试：
-> ```bash
-> git commit --allow-empty -m "init"
-> ```
-> 然后再次执行上面的第 3 步。
-
-### 第三步：获取并填写 GitHub Token
-
-1. 按照 [获取必要令牌](#-获取必要令牌重要) 中的步骤获取 **GitHub Personal Access Token**（需勾选 `repo` 权限，过期时间设为 **No expiration**）。
-2. 编辑对应平台的推送脚本：
-   - **Windows**：用文本编辑器打开 `git_sync.ps1`
-   - **Linux**：用文本编辑器打开 `git_sync.sh`
-3. 将脚本开头部分的四个变量替换为你的真实信息：
-
-   ```powershell
-   # Windows (git_sync.ps1)
-   $github_token = "your_github_personal_access_token_here"
-   $github_username = "your_github_username"
-   $repo_name = "your_repo_name"
-   $branch = "your_branch"
-   ```
-
-   ```bash
-   # Linux (git_sync.sh)
-   github_token="your_github_personal_access_token_here"
-   github_username="your_github_username"
-   repo_name="your_repo_name"
-   branch="your_branch"
-   ```
-
-### 第四步：测试推送
+### 第二步：测试同步
 
 1. 确保项目目录下已有 `ip.txt` 文件（可先手动运行一次 `python main.py` 生成）。
 2. 手动执行推送脚本测试：
    - **Windows**：双击运行 `git_sync.ps1` 或在 PowerShell 中执行 `.\git_sync.ps1`
    - **Linux**：执行 `./git_sync.sh`
-3. 若终端显示 `✅ ip.txt 已推送到 GitHub`，则配置成功。
-4. 之后每次运行 `main.py`，程序都会自动调用推送脚本，无需人工干预。
+3. 若终端显示“已安全同步”，则配置成功。之后每次运行 `main.py` 都会自动调用并发安全同步。
+4. 远端文件示例：
+
+```text
+104.16.0.1:443#US|济南联通
+104.16.0.2:443#US|济南联通
+162.159.1.1:443#US|郑州教育网
+```
+
+每行仍是合法的 `IP:端口#标签`。某终端再次同步时，只替换标签最后一个 `|` 后与自己 `GITHUB_SYNC_FIELD_ID` 完全一致的行，其他内容保持原样。
 
 <details>
 <summary>🚨 推送报错常见原因</summary>
 
 | 报错信息 | 原因 | 解决方法 |
 |----------|------|----------|
-| `remote origin already exists` | 远程仓库已关联过 | 执行 `git remote set-url origin https://github.com/你的用户名/仓库名.git` 直接修改地址 |
-| `failed to push some refs` | 远程有本地没有的文件（如 README） | 首次推送使用 `git push -f origin main` 强制覆盖（⚠️ 会删除远程多余文件） |
-| `Permission denied` 或 `403` | Token 无效或权限不足 | 检查 Token 是否勾选 `repo` 权限，且未过期；重新生成 Token 并替换 |
-| `src refspec main does not match any` | 本地分支名不是 `main` | 执行 `git branch` 查看实际分支名，修改推送脚本中的 `$branch` 变量与之相同 |
+| `401` / `403` | Token 无效或 Contents 权限不足 | 检查 Token 与仓库授权 |
+| `404` | 仓库、分支或路径配置错误 | 检查 `GITHUB_SYNC_REPOSITORY` 与 `GITHUB_SYNC_BRANCH` |
+| `409` / `422` | 多终端并发更新 | 程序会自动重新拉取合并；持续出现时增加冲突重试次数 |
+| 没有有效节点 | 本机 `ip.txt` 尚未生成 | 先运行 `main.py` |
 </details>
 
 ---
@@ -793,20 +767,17 @@ git branch -M $(git remote show origin | grep "HEAD branch" | cut -d " " -f5) 2>
 <summary>📤 GitHub 推送与同步</summary>
 
 4. **GitHub 推送失败**  
-   - 检查 `git_sync.ps1` / `git_sync.sh` 中的 Token、用户名、仓库名是否正确。
-   - 确保 Token 具备 `repo` 权限。
-   - 确认本地 Git 已正确配置用户信息（`git config --global user.name/email`）。
+   - 检查 `config.json` 中的 Token、仓库、分支和终端名称是否正确。
+   - 确保 fine-grained Token 具备 Contents 读写权限，或 classic Token 具备 `repo` 权限。
 
 5. **GitHub 推送时提示权限错误或 403**  
    - 请确认令牌具有 `repo` 权限，且未过期。创建令牌时务必勾选 **repo** 全部子项，并将过期时间设为 **No expiration**。
 
-6. **`git pull` 报错 `fatal: refusing to merge unrelated histories`**  
-   - 通常发生在 Fork 或手动修改远程仓库后。运行对应平台的一键修复脚本即可：
-     - Windows：`.\update_fork.ps1`
-     - Linux：`./update_fork.sh`
+6. **多个终端会互相覆盖吗？**
+   - 不会。程序按 `GITHUB_SYNC_FIELD_ID` 只替换本终端节点，并用文件 SHA 检测并发冲突后重新合并。
 
-7. **每次推送都弹出浏览器要求登录**  
-   - 运行上述 `update_fork.ps1` 或 `update_fork.sh`，自动将远程地址设为免认证模式。
+7. **为什么远端标签多了 `|济南联通`？**
+   - 这是终端所有权标识，仍属于 `IP:端口#标签` 格式，用于下一次精准替换本终端字段。
 
 </details>
 
