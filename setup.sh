@@ -25,8 +25,8 @@ cd "$SCRIPT_DIR"
 echo -e "工作目录: $SCRIPT_DIR\n"
 
 # ==================== 配置 ====================
-TASK_INTERVAL_MINUTES=5
-PYTHON_SCRIPT="main.py"
+TASK_INTERVAL_MINUTES=15
+PYTHON_SCRIPT="scheduled_run.py"
 # =============================================
 
 # ---------- 辅助函数：检测命令是否存在 ----------
@@ -198,17 +198,19 @@ config.json
 git_sync.ps1
 git_sync.sh
 __pycache__/
+.cfnb_schedule.lock
+cron.log
 EOF
 echo -e "✅ .gitignore 已创建\n"
 
-# ---------- 验证 main.py 是否存在 ----------
-if [ ! -f "$PYTHON_SCRIPT" ]; then
-    echo -e "${RED}❌ 错误：未找到 $PYTHON_SCRIPT 文件，请确保脚本位于正确目录。${NC}"
+# ---------- 验证调度入口和主程序是否存在 ----------
+if [ ! -f "$PYTHON_SCRIPT" ] || [ ! -f "main.py" ]; then
+    echo -e "${RED}❌ 错误：未找到 scheduled_run.py 或 main.py。${NC}"
     exit 1
 fi
 
 # ---------- 4. 配置 cron 定时任务 ----------
-echo -e "${GREEN}[4/4] 配置定时任务（每${TASK_INTERVAL_MINUTES}分钟运行一次）...${NC}"
+echo -e "${GREEN}[4/4] 配置定时任务（CF忙时每15分钟、非忙时每30分钟）...${NC}"
 
 calc_next_aligned() {
     local interval=$1
@@ -226,7 +228,7 @@ calc_next_aligned() {
 NEXT_RUN=$(calc_next_aligned $TASK_INTERVAL_MINUTES)
 echo -e "   首次运行将发生在: ${CYAN}$NEXT_RUN${NC}（之后每 ${TASK_INTERVAL_MINUTES} 分钟运行一次）"
 
-CRON_MINUTE_FIELD="*/5"
+CRON_MINUTE_FIELD="*/15"
 PYTHON_PATH=$(which python3)
 
 if [[ $EUID -eq 0 ]]; then
@@ -238,14 +240,15 @@ else
 fi
 
 CRON_CMD="$CRON_MINUTE_FIELD * * * * cd \"$SCRIPT_DIR\" && $NICE_PREFIX \"$PYTHON_PATH\" \"$SCRIPT_DIR/$PYTHON_SCRIPT\" >> \"$SCRIPT_DIR/cron.log\" 2>&1"
-CRON_COMMENT="# Cloudflare IP 优选工具定时任务（每5分钟，整点对齐）"
+CRON_COMMENT="# Cloudflare IP 优选工具（中国CF CDN忙时15分钟/非忙时30分钟）"
 
-if crontab -l 2>/dev/null | grep -F "$SCRIPT_DIR/$PYTHON_SCRIPT" > /dev/null; then
-    echo -e "${YELLOW}⚠️ 定时任务已存在，跳过添加。${NC}"
-else
-    (crontab -l 2>/dev/null || true; echo "$CRON_COMMENT"; echo "$CRON_CMD") | crontab -
-    echo -e "${GREEN}✅ 定时任务已添加（每${TASK_INTERVAL_MINUTES}分钟，从下一个整5分钟开始）${NC}"
-fi
+EXISTING_CRONTAB=$(crontab -l 2>/dev/null || true)
+CLEANED_CRONTAB=$(printf '%s\n' "$EXISTING_CRONTAB" \
+    | grep -v -F "$SCRIPT_DIR/main.py" \
+    | grep -v -F "$SCRIPT_DIR/$PYTHON_SCRIPT" \
+    | grep -v -F "# Cloudflare IP 优选工具" || true)
+(printf '%s\n' "$CLEANED_CRONTAB"; echo "$CRON_COMMENT"; echo "$CRON_CMD") | crontab -
+echo -e "${GREEN}✅ 定时任务已更新（已移除本目录旧版5分钟任务）${NC}"
 
 echo -e "   执行命令: $NICE_PREFIX $PYTHON_PATH $SCRIPT_DIR/$PYTHON_SCRIPT"
 echo -e "   日志文件: $SCRIPT_DIR/cron.log"
@@ -262,7 +265,7 @@ echo -e " 🎉 部署完成！"
 echo -e "========================================${NC}\n"
 echo -e "${YELLOW}👉 接下来请完成以下手动配置步骤：${NC}"
 echo -e "1. 编辑 config.json，填写 WxPusher 的 APP_TOKEN 和 UID（如需通知）"
-echo -e "2. 编辑 git_sync.sh，填写你的 GitHub Token、用户名及仓库名"
+echo -e "2. 在 config.json 填写 GITHUB_SYNC_TOKEN、GITHUB_SYNC_REPOSITORY 和唯一的 GITHUB_SYNC_FIELD_ID"
 echo -e "3. 手动运行一次测试: ${CYAN}python3 main.py${NC}"
 echo -e "4. 查看定时任务日志: ${CYAN}tail -f cron.log${NC}"
 echo -e "5. 管理定时任务: ${CYAN}crontab -e${NC}"
@@ -272,7 +275,7 @@ read -p "是否立即运行一次 main.py 进行测试？(y/N) " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo -e "${CYAN}正在运行 main.py ...${NC}"
-    python3 "$PYTHON_SCRIPT"
+    python3 "$SCRIPT_DIR/main.py"
 fi
 
 exit 0

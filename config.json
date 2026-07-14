@@ -2,10 +2,10 @@
     "_comment": "Cloudflare IP 优选工具配置文件 - 请根据需求修改下方参数",
 
     "USE_GLOBAL_MODE": true,
-    "_comment_USE_GLOBAL_MODE": "true=全局最优15个；false=每个国家最优1个",
+    "_comment_USE_GLOBAL_MODE": "true=全局最优5个；false=每个国家最优1个",
 
-    "GLOBAL_TOP_N": 15,
-    "_comment_GLOBAL_TOP_N": "全局模式下最终保留的节点数量",
+    "GLOBAL_TOP_N": 5,
+    "_comment_GLOBAL_TOP_N": "全局模式下最终保留的节点数量（每个终端默认只上报最优5个）",
 
     "PER_COUNTRY_TOP_N": 1,
     "_comment_PER_COUNTRY_TOP_N": "分国家模式下每个国家保留的节点数量",
@@ -263,6 +263,46 @@
     "GITHUB_SYNC_RETRY_DELAY": 3,
     "GIT_SYNC_PROCESS_TIMEOUT": 180,
     "_comment_GIT_SYNC_PROCESS_TIMEOUT": "Git 同步子进程最大运行时间（秒）",
+
+    "GITHUB_SYNC_TOKEN": "your_github_personal_access_token_here",
+    "_comment_GITHUB_SYNC_TOKEN": "GitHub Personal Access Token，仅需 Contents 读写权限；请勿提交真实令牌",
+
+    "GITHUB_SYNC_REPOSITORY": "your_github_username/your_repo_name",
+    "_comment_GITHUB_SYNC_REPOSITORY": "目标仓库，格式为 owner/repo",
+
+    "GITHUB_SYNC_BRANCH": "main",
+    "_comment_GITHUB_SYNC_BRANCH": "目标分支名称",
+
+    "GITHUB_SYNC_REMOTE_PATH": "ip.txt",
+    "_comment_GITHUB_SYNC_REMOTE_PATH": "多终端汇总文件在仓库中的路径",
+
+    "GITHUB_SYNC_FIELD_ID": "请填写终端名称",
+    "_comment_GITHUB_SYNC_FIELD_ID": "本终端唯一标识，例如济南联通或郑州教育网；不要包含空格、|或#",
+
+    "GITHUB_SYNC_TOP_N": 5,
+    "_comment_GITHUB_SYNC_TOP_N": "本终端每次最多上报的最优节点数",
+
+    "GITHUB_SYNC_CONFLICT_RETRIES": 5,
+    "_comment_GITHUB_SYNC_CONFLICT_RETRIES": "多个终端同时更新时，因远端版本变化而重新拉取合并的最大次数",
+
+    "_comment_schedule": "Cloudflare CDN 中国流量峰谷调度（北京时间）",
+    "SCHEDULE_TIMEZONE_OFFSET_HOURS": 8,
+    "_comment_SCHEDULE_TIMEZONE_OFFSET_HOURS": "调度时区相对 UTC 的小时偏移，中国大陆为8",
+
+    "SCHEDULE_CF_BUSY_START_HOUR": 18,
+    "_comment_SCHEDULE_CF_BUSY_START_HOUR": "Cloudflare CDN 中国忙时开始小时（北京时间，含）",
+
+    "SCHEDULE_CF_BUSY_END_HOUR": 24,
+    "_comment_SCHEDULE_CF_BUSY_END_HOUR": "Cloudflare CDN 中国忙时结束小时（北京时间，不含；24表示次日0点）",
+
+    "SCHEDULE_BUSY_INTERVAL_MINUTES": 15,
+    "_comment_SCHEDULE_BUSY_INTERVAL_MINUTES": "CF CDN 中国忙时筛选间隔",
+
+    "SCHEDULE_OFFPEAK_INTERVAL_MINUTES": 30,
+    "_comment_SCHEDULE_OFFPEAK_INTERVAL_MINUTES": "CF CDN 中国非忙时筛选间隔",
+
+    "SCHEDULE_LOCK_STALE_MINUTES": 180,
+    "_comment_SCHEDULE_LOCK_STALE_MINUTES": "防止任务重叠的锁文件失效时间",
 
     "_comment_AD": "ip.txt 广告植入（开关独立）",
     "AD_HEADER_ENABLED": false,

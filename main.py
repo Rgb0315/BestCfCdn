@@ -177,7 +177,7 @@ def load_config():
     """加载 config.json 配置文件，缺失必填字段时抛出异常"""
     defaults = {
         "USE_GLOBAL_MODE": True,
-        "GLOBAL_TOP_N": 15,
+        "GLOBAL_TOP_N": 5,
         "PER_COUNTRY_TOP_N": 1,
         "BANDWIDTH_CANDIDATES": 150,
         "TCP_PROBES": 1,
@@ -1539,32 +1539,24 @@ def batch_update_cloudflare_dns(ip_list, ip_info=None, full_bw_results=None, tar
                     send_wxpusher_notification(content=final_error, summary="DNS 更新失败")
 
 def sync_to_github():
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    if GITHUB_SYNC_MAX_RETRIES <= 0:
+        print("GitHub 同步已禁用。")
+        return
 
-    if sys.platform == "win32":
-        script_name = "git_sync.ps1"
-        interpreter = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]
-        creationflags = subprocess.CREATE_NO_WINDOW
-    else:
-        script_name = "git_sync.sh"
-        interpreter = ["bash"]
-        creationflags = 0
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_name = "github_sync.py"
+    interpreter = [sys.executable]
+    creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
     script_path = os.path.join(script_dir, script_name)
     if not os.path.exists(script_path):
         print(f"未找到 {script_name}，跳过 GitHub 同步。")
         return
 
-    if sys.platform != "win32":
-        try:
-            os.chmod(script_path, 0o755)
-        except Exception:
-            pass
-
     for attempt in range(1, GITHUB_SYNC_MAX_RETRIES + 1):
         print(f"\n正在同步到 GitHub (尝试 {attempt}/{GITHUB_SYNC_MAX_RETRIES})...")
         try:
-            cmd = interpreter + [script_path]
+            cmd = interpreter + [script_path, "--input", os.path.join(script_dir, OUTPUT_FILE)]
             process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
