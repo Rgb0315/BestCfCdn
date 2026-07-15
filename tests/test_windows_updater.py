@@ -19,6 +19,7 @@ class WindowsUpdaterSourceTests(unittest.TestCase):
         self.assertIn("Invoke-UpdatePythonCode -Code $mergeCode", script)
         self.assertNotIn('"-c", $mergeCode', script)
         self.assertNotIn('"-c", $validateCode', script)
+        self.assertIn("legacy_schedule_defaults", merge_code)
         compile(merge_code, "<update_fork.ps1 merge code>", "exec")
 
     def test_untracked_config_probe_does_not_emit_pathspec_error(self):
