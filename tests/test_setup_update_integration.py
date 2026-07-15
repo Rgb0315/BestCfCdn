@@ -77,6 +77,8 @@ class SetupUpdateIntegrationTests(unittest.TestCase):
             "OUTPUT_FILE": "ip.local.txt",
             "GITHUB_SYNC_REMOTE_PATH": "ip.txt",
             "EXISTING_SETTING": f"default-v{version}",
+            "SCHEDULE_BUSY_INTERVAL_MINUTES": 15 if version == 1 else 30,
+            "SCHEDULE_OFFPEAK_INTERVAL_MINUTES": 30 if version == 1 else 60,
         }
         if version >= 2:
             template["NEW_SETTING"] = 42
@@ -136,6 +138,8 @@ class SetupUpdateIntegrationTests(unittest.TestCase):
             "OUTPUT_FILE": "ip.txt",
             "GITHUB_SYNC_REMOTE_PATH": "ip.txt",
             "EXISTING_SETTING": "custom-value",
+            "SCHEDULE_BUSY_INTERVAL_MINUTES": 15,
+            "SCHEDULE_OFFPEAK_INTERVAL_MINUTES": 30,
         }
         (self.client / "config.json").write_text(
             json.dumps(local_config, ensure_ascii=False, indent=4) + "\n",
@@ -158,6 +162,8 @@ class SetupUpdateIntegrationTests(unittest.TestCase):
         self.assertEqual("custom-value", merged["EXISTING_SETTING"])
         self.assertEqual(42, merged["NEW_SETTING"])
         self.assertEqual("ip.local.txt", merged["OUTPUT_FILE"])
+        self.assertEqual(30, merged["SCHEDULE_BUSY_INTERVAL_MINUTES"])
+        self.assertEqual(60, merged["SCHEDULE_OFFPEAK_INTERVAL_MINUTES"])
 
         backups = sorted(self.home.glob("bestcfcdn_backup_*"))
         self.assertEqual(1, len(backups))
@@ -169,6 +175,34 @@ class SetupUpdateIntegrationTests(unittest.TestCase):
 
         run(command, self.client, env=self._environment())
         self.assertEqual(backups, sorted(self.home.glob("bestcfcdn_backup_*")))
+
+    def test_updater_preserves_custom_schedule_intervals(self):
+        local_config = {
+            "GITHUB_SYNC_FIELD_ID": "device-a",
+            "SCHEDULE_BUSY_INTERVAL_MINUTES": 20,
+            "SCHEDULE_OFFPEAK_INTERVAL_MINUTES": 90,
+        }
+        (self.client / "config.json").write_text(
+            json.dumps(local_config, ensure_ascii=False, indent=4) + "\n",
+            encoding="utf-8",
+        )
+        self._push_v2()
+
+        run(
+            [
+                "bash",
+                "update_fork.sh",
+                "--non-interactive",
+                "--preserve-missing-config",
+            ],
+            self.client,
+            env=self._environment(),
+        )
+
+        with (self.client / "config.json").open(encoding="utf-8") as file:
+            merged = json.load(file)
+        self.assertEqual(20, merged["SCHEDULE_BUSY_INTERVAL_MINUTES"])
+        self.assertEqual(90, merged["SCHEDULE_OFFPEAK_INTERVAL_MINUTES"])
 
 
 if __name__ == "__main__":

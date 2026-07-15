@@ -25,8 +25,8 @@ def is_busy_hour(hour, start, end):
 def should_run(now, config):
     start = int(config.get("SCHEDULE_CF_BUSY_START_HOUR", 18))
     end = int(config.get("SCHEDULE_CF_BUSY_END_HOUR", 24))
-    busy_interval = int(config.get("SCHEDULE_BUSY_INTERVAL_MINUTES", 15))
-    offpeak_interval = int(config.get("SCHEDULE_OFFPEAK_INTERVAL_MINUTES", 30))
+    busy_interval = int(config.get("SCHEDULE_BUSY_INTERVAL_MINUTES", 30))
+    offpeak_interval = int(config.get("SCHEDULE_OFFPEAK_INTERVAL_MINUTES", 60))
     if not 0 <= start <= 23 or not 0 <= end <= 24:
         raise ValueError("调度忙时小时必须在 0-24 范围内")
     if busy_interval < 1 or offpeak_interval < 1:

@@ -213,10 +213,19 @@ with open(template_path, encoding="utf-8-sig") as file:
 if not isinstance(backup, dict) or not isinstance(current, dict):
     raise ValueError("配置文件顶层必须是 JSON 对象")
 legacy_remote = str(backup.get("GITHUB_SYNC_REMOTE_PATH", "ip.txt")).strip()
+legacy_schedule_defaults = (
+    backup.get("SCHEDULE_BUSY_INTERVAL_MINUTES") == 15
+    and backup.get("SCHEDULE_OFFPEAK_INTERVAL_MINUTES") == 30
+)
 for key, value in backup.items():
     if key in current and not key.startswith("_comment"):
         if key == "OUTPUT_FILE" and os.path.normcase(os.path.normpath(str(value))) == \
                 os.path.normcase(os.path.normpath(legacy_remote)):
+            continue
+        if legacy_schedule_defaults and key in {
+            "SCHEDULE_BUSY_INTERVAL_MINUTES",
+            "SCHEDULE_OFFPEAK_INTERVAL_MINUTES",
+        }:
             continue
         current[key] = value
 with open(output_path, "w", encoding="utf-8") as file:
