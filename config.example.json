@@ -289,6 +289,9 @@
     "GIT_SYNC_PROCESS_TIMEOUT": 300,
     "_comment_GIT_SYNC_PROCESS_TIMEOUT": "Git 同步子进程最大运行时间（秒）",
 
+    "UPDATE_BACKUP_RETENTION": 1,
+    "_comment_UPDATE_BACKUP_RETENTION": "setup 更新成功后保留的配置备份数；0=不保留，1=仅保留最新一份（只允许0或1；更新失败时始终保留一份救援备份）",
+
     "GITHUB_SYNC_TOKEN": "your_github_personal_access_token_here",
     "_comment_GITHUB_SYNC_TOKEN": "GitHub Personal Access Token，仅需 Contents 读写权限；请勿提交真实令牌",
 

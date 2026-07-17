@@ -113,6 +113,50 @@ function Test-GitTrackedPath {
     return @($result.Output | Where-Object { $_ -eq $Path }).Count -gt 0
 }
 
+function Get-ManagedBackupDirectories {
+    $managed = @()
+    foreach ($item in @(Get-ChildItem -LiteralPath $HOME -Directory -Force -ErrorAction SilentlyContinue)) {
+        if ($item.Name -notmatch '^bestcfcdn_backup_(?:latest|\d{8}_\d{6}(?:_\d{3})?(?:\.[A-Za-z0-9]+)?)$') {
+            continue
+        }
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "备份路径是重解析点，已拒绝自动清理：$($item.FullName)"
+        }
+        $managed += $item
+    }
+    return @($managed)
+}
+
+function Remove-ManagedBackupDirectories {
+    foreach ($directory in @(Get-ManagedBackupDirectories)) {
+        Remove-Item -LiteralPath $directory.FullName -Recurse -Force
+    }
+}
+
+function Set-ManagedBackupRetention {
+    param([ValidateSet(0, 1)][int]$Retention)
+
+    $directories = @(Get-ManagedBackupDirectories)
+    if ($Retention -eq 0) {
+        foreach ($directory in $directories) {
+            Remove-Item -LiteralPath $directory.FullName -Recurse -Force
+        }
+        return
+    }
+    if ($directories.Count -eq 0) { return }
+
+    $latestPath = Join-Path $HOME "bestcfcdn_backup_latest"
+    $newest = $directories | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    foreach ($directory in $directories) {
+        if ($directory.FullName -ne $newest.FullName) {
+            Remove-Item -LiteralPath $directory.FullName -Recurse -Force
+        }
+    }
+    if ([IO.Path]::GetFullPath($newest.FullName) -ne [IO.Path]::GetFullPath($latestPath)) {
+        Move-Item -LiteralPath $newest.FullName -Destination $latestPath -Force
+    }
+}
+
 $git = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue |
     Select-Object -First 1
 if (-not $git) { throw "未找到 git.exe，请先运行 setup.ps1。" }
@@ -149,6 +193,7 @@ if ((Test-Path -LiteralPath $configPath) -and -not (Test-Path -LiteralPath $conf
 }
 $configExistedBeforeUpdate = Test-Path -LiteralPath $configPath -PathType Leaf
 $localIpExistedBeforeUpdate = Test-Path -LiteralPath (Join-Path $PSScriptRoot "ip.local.txt") -PathType Leaf
+$BackupRetention = 1
 
 # 存在旧配置时，必须先确认能够完整解析；验证失败时不触碰 Git 工作树。
 if ($configExistedBeforeUpdate) {
@@ -161,9 +206,21 @@ if ($configExistedBeforeUpdate) {
     if (-not $configValid) {
         throw "config.json 不是有效的 JSON，已在更新前停止，请先修正配置。"
     }
+    $configObject = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $retentionProperty = $configObject.PSObject.Properties["UPDATE_BACKUP_RETENTION"]
+    if ($null -ne $retentionProperty) {
+        $retentionValue = $retentionProperty.Value
+        $isInteger = ($retentionValue -is [int]) -or ($retentionValue -is [long])
+        if (-not $isInteger -or $retentionValue -notin @(0, 1)) {
+            throw "UPDATE_BACKUP_RETENTION 只能是整数 0 或 1，已在更新前停止。"
+        }
+        $BackupRetention = [int]$retentionValue
+    }
 }
 
 # fetch 只更新远程引用。网络失败时，config/ip 和工作树都不会被修改。
+$startHeadResult = Invoke-Git -Arguments @("rev-parse", "HEAD") -Quiet
+$startHead = ($startHeadResult.Output -join "").Trim()
 Write-Host "拉取 origin/$Branch..." -ForegroundColor Yellow
 $previousGitTerminalPrompt = $env:GIT_TERMINAL_PROMPT
 try {
@@ -194,52 +251,14 @@ if (-not $fastForwardCheck.Success) {
     throw "本地 '$Branch' 与 origin/$Branch 已分叉，无法安全快进更新。"
 }
 
-$timestamp = Get-Date -Format "yyyyMMdd_HHmmss_fff"
-$BackupDir = Join-Path $HOME "bestcfcdn_backup_$timestamp"
-New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
-foreach ($name in @("config.json", "ip.local.txt")) {
-    if (Test-Path -LiteralPath $name -PathType Leaf) {
-        Copy-Item -LiteralPath $name -Destination (Join-Path $BackupDir $name) -Force
-    }
-}
-$legacyIpBackup = Join-Path $BackupDir "ip.legacy.txt"
-if (Test-Path -LiteralPath "ip.txt" -PathType Leaf) {
-    $ipTrackedBeforeUpdate = Test-GitTrackedPath -Path "ip.txt"
-    $ipWorktreeClean = Invoke-Git -Arguments @("diff", "--quiet", "--", "ip.txt") -AllowFailure -Quiet
-    $ipIndexClean = Invoke-Git -Arguments @("diff", "--cached", "--quiet", "--", "ip.txt") -AllowFailure -Quiet
-    if (-not $ipTrackedBeforeUpdate -or -not $ipWorktreeClean.Success -or -not $ipIndexClean.Success) {
-        Copy-Item -LiteralPath "ip.txt" -Destination $legacyIpBackup -Force
-    }
-}
-Write-Host "配置备份：$BackupDir" -ForegroundColor Yellow
-
+$remoteHeadResult = Invoke-Git -Arguments @("rev-parse", "origin/$Branch") -Quiet
+$remoteHead = ($remoteHeadResult.Output -join "").Trim()
+$sourceChange = $startHead -ne $remoteHead
 $configTempPath = Join-Path $PSScriptRoot (".config.json.update.{0}.{1}.tmp" -f $PID, ([guid]::NewGuid()).ToString("N"))
-$mutationStarted = $false
-$updateCompleted = $false
-$updateError = $null
-try {
-    # 只有 fetch 和快进检查都成功后，才临时还原旧版本中可能被跟踪的本机文件。
-    $mutationStarted = $true
-    $configTracked = Test-GitTrackedPath -Path "config.json"
-    if ($configTracked) {
-        $null = Invoke-Git -Arguments @("restore", "--staged", "--worktree", "--", "config.json") -Quiet
-    }
-    $ipTracked = Test-GitTrackedPath -Path "ip.txt"
-    if ($ipTracked) {
-        $null = Invoke-Git -Arguments @("restore", "--staged", "--worktree", "--", "ip.txt") -Quiet
-    } elseif (Test-Path -LiteralPath "ip.txt") {
-        Remove-Item -LiteralPath "ip.txt" -Force
-    }
+$configTemplate = Join-Path $PSScriptRoot "config.example.json"
+$configChange = $false
 
-    $null = Invoke-Git -Arguments @("merge", "--ff-only", "origin/$Branch")
-
-    $configBackup = Join-Path $BackupDir "config.json"
-    $configTemplate = Join-Path $PSScriptRoot "config.example.json"
-    if (-not (Test-Path -LiteralPath $configTemplate -PathType Leaf)) {
-        throw "更新后缺少 config.example.json。"
-    }
-    if (Test-Path -LiteralPath $configBackup -PathType Leaf) {
-        $mergeCode = @'
+$mergeCode = @'
 import json, os, sys
 backup_path, template_path, temp_path, output_path = sys.argv[1:]
 with open(backup_path, encoding='utf-8-sig') as f:
@@ -268,8 +287,88 @@ with open(temp_path, 'w', encoding='utf-8', newline='\n') as f:
     f.write('\n')
     f.flush()
     os.fsync(f.fileno())
-os.replace(temp_path, output_path)
+if os.path.abspath(temp_path) != os.path.abspath(output_path):
+    os.replace(temp_path, output_path)
 '@
+
+if (-not $sourceChange) {
+    if (-not (Test-Path -LiteralPath $configTemplate -PathType Leaf)) {
+        throw "当前版本缺少 config.example.json。"
+    }
+    if ($configExistedBeforeUpdate) {
+        $mergeOk = Invoke-UpdatePythonCode -Code $mergeCode -Arguments @(
+            $configPath, $configTemplate, $configTempPath, $configTempPath
+        ) -AllowFailure
+        if (-not $mergeOk) { throw "config.json 预合并检查失败。" }
+        $existingConfigHash = (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
+        $preparedConfigHash = (Get-FileHash -LiteralPath $configTempPath -Algorithm SHA256).Hash
+        $configChange = $existingConfigHash -ne $preparedConfigHash
+    } elseif (-not $PreserveMissingConfig) {
+        $configChange = $true
+    }
+}
+
+$hadLegacyIp = $false
+if (Test-Path -LiteralPath "ip.txt" -PathType Leaf) {
+    $ipTrackedBeforeUpdate = Test-GitTrackedPath -Path "ip.txt"
+    $ipWorktreeClean = Invoke-Git -Arguments @("diff", "--quiet", "--", "ip.txt") -AllowFailure -Quiet
+    $ipIndexClean = Invoke-Git -Arguments @("diff", "--cached", "--quiet", "--", "ip.txt") -AllowFailure -Quiet
+    $hadLegacyIp = -not $ipTrackedBeforeUpdate -or -not $ipWorktreeClean.Success -or -not $ipIndexClean.Success
+}
+
+if (-not $sourceChange -and -not $configChange -and -not $hadLegacyIp) {
+    Set-ManagedBackupRetention -Retention $BackupRetention
+    if (Test-Path -LiteralPath $configTempPath) {
+        Remove-Item -LiteralPath $configTempPath -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host "✅ 已是最新版，config.json 字段也完整；未创建新备份。" -ForegroundColor Green
+    return
+}
+
+$BackupDir = $null
+$hasBackupContent = $configExistedBeforeUpdate -or $localIpExistedBeforeUpdate -or $hadLegacyIp
+if ($hasBackupContent) {
+    Remove-ManagedBackupDirectories
+    $BackupDir = Join-Path $HOME "bestcfcdn_backup_latest"
+    New-Item -ItemType Directory -Force -Path $BackupDir | Out-Null
+    foreach ($name in @("config.json", "ip.local.txt")) {
+        if (Test-Path -LiteralPath $name -PathType Leaf) {
+            Copy-Item -LiteralPath $name -Destination (Join-Path $BackupDir $name) -Force
+        }
+    }
+    $legacyIpBackup = Join-Path $BackupDir "ip.legacy.txt"
+    if ($hadLegacyIp) {
+        Copy-Item -LiteralPath "ip.txt" -Destination $legacyIpBackup -Force
+    }
+    Write-Host "配置备份：$BackupDir" -ForegroundColor Yellow
+} else {
+    $legacyIpBackup = $null
+}
+$mutationStarted = $false
+$updateCompleted = $false
+$updateError = $null
+try {
+    # 只有 fetch 和快进检查都成功后，才临时还原旧版本中可能被跟踪的本机文件。
+    $mutationStarted = $true
+    $configTracked = Test-GitTrackedPath -Path "config.json"
+    if ($configTracked) {
+        $null = Invoke-Git -Arguments @("restore", "--staged", "--worktree", "--", "config.json") -Quiet
+    }
+    $ipTracked = Test-GitTrackedPath -Path "ip.txt"
+    if ($ipTracked) {
+        $null = Invoke-Git -Arguments @("restore", "--staged", "--worktree", "--", "ip.txt") -Quiet
+    } elseif (Test-Path -LiteralPath "ip.txt") {
+        Remove-Item -LiteralPath "ip.txt" -Force
+    }
+
+    $null = Invoke-Git -Arguments @("merge", "--ff-only", "origin/$Branch")
+
+    $configBackup = if ($BackupDir) { Join-Path $BackupDir "config.json" } else { $null }
+    $configTemplate = Join-Path $PSScriptRoot "config.example.json"
+    if (-not (Test-Path -LiteralPath $configTemplate -PathType Leaf)) {
+        throw "更新后缺少 config.example.json。"
+    }
+    if ($configBackup -and (Test-Path -LiteralPath $configBackup -PathType Leaf)) {
         $mergeOk = Invoke-UpdatePythonCode -Code $mergeCode -Arguments @(
             $configBackup, $configTemplate, $configTempPath, $configPath
         ) -AllowFailure
@@ -278,10 +377,10 @@ os.replace(temp_path, output_path)
         Copy-Item -LiteralPath $configTemplate -Destination $configTempPath -Force
         Move-Item -LiteralPath $configTempPath -Destination $configPath -Force
     }
-    $localIpBackup = Join-Path $BackupDir "ip.local.txt"
-    if (Test-Path -LiteralPath $localIpBackup -PathType Leaf) {
+    $localIpBackup = if ($BackupDir) { Join-Path $BackupDir "ip.local.txt" } else { $null }
+    if ($localIpBackup -and (Test-Path -LiteralPath $localIpBackup -PathType Leaf)) {
         Copy-Item -LiteralPath $localIpBackup -Destination "ip.local.txt" -Force
-    } elseif (Test-Path -LiteralPath $legacyIpBackup -PathType Leaf) {
+    } elseif ($legacyIpBackup -and (Test-Path -LiteralPath $legacyIpBackup -PathType Leaf)) {
         Copy-Item -LiteralPath $legacyIpBackup -Destination "ip.local.txt" -Force
     }
     $updateCompleted = $true
@@ -290,14 +389,16 @@ os.replace(temp_path, output_path)
 } finally {
     if ($mutationStarted -and -not $updateCompleted) {
         Write-Host "更新未完整完成，正在恢复本机配置与结果文件。" -ForegroundColor Red
-        foreach ($name in @("config.json", "ip.local.txt")) {
-            try {
-                $backupPath = Join-Path $BackupDir $name
-                if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
-                    Copy-Item -LiteralPath $backupPath -Destination $name -Force
+        if ($BackupDir) {
+            foreach ($name in @("config.json", "ip.local.txt")) {
+                try {
+                    $backupPath = Join-Path $BackupDir $name
+                    if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+                        Copy-Item -LiteralPath $backupPath -Destination $name -Force
+                    }
+                } catch {
+                    Write-Host "⚠️ 恢复 $name 失败：$($_.Exception.Message)" -ForegroundColor Yellow
                 }
-            } catch {
-                Write-Host "⚠️ 恢复 $name 失败：$($_.Exception.Message)" -ForegroundColor Yellow
             }
         }
         try {
@@ -309,14 +410,14 @@ os.replace(temp_path, output_path)
         }
         try {
             if (-not $localIpExistedBeforeUpdate -and (Test-Path -LiteralPath "ip.local.txt") -and
-                    -not (Test-Path -LiteralPath (Join-Path $BackupDir "ip.local.txt"))) {
+                    (-not $BackupDir -or -not (Test-Path -LiteralPath (Join-Path $BackupDir "ip.local.txt")))) {
                 Remove-Item -LiteralPath "ip.local.txt" -Force
             }
         } catch {
             Write-Host "⚠️ 清理临时 ip.local.txt 失败：$($_.Exception.Message)" -ForegroundColor Yellow
         }
         try {
-            if (Test-Path -LiteralPath $legacyIpBackup -PathType Leaf) {
+            if ($legacyIpBackup -and (Test-Path -LiteralPath $legacyIpBackup -PathType Leaf)) {
                 Copy-Item -LiteralPath $legacyIpBackup -Destination "ip.txt" -Force
             }
         } catch {
@@ -329,10 +430,19 @@ os.replace(temp_path, output_path)
 }
 if ($updateError) { throw $updateError }
 
+if ($BackupRetention -eq 0) {
+    Remove-ManagedBackupDirectories
+    $BackupDir = $null
+    Write-Host "已按配置在成功更新后移除备份（UPDATE_BACKUP_RETENTION=0）。" -ForegroundColor Gray
+} else {
+    Set-ManagedBackupRetention -Retention 1
+}
 Write-Host ""
 Write-Host "✅ 更新完成，已保留本机配置与本机优选结果。" -ForegroundColor Green
 Write-Host "未执行 reset --hard，也未将 Token 写入 Git URL。" -ForegroundColor Gray
-Write-Host "备份目录：$BackupDir" -ForegroundColor Gray
+if ($BackupDir) {
+    Write-Host "备份目录：$BackupDir" -ForegroundColor Gray
+}
 if (-not $NonInteractive) {
     $null = Read-Host "按 Enter 键退出"
 }

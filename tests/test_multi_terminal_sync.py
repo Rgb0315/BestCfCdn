@@ -49,6 +49,11 @@ class ConfigDefaultsTests(unittest.TestCase):
         self.assertEqual(30, config["SCHEDULE_BUSY_INTERVAL_MINUTES"])
         self.assertEqual(60, config["SCHEDULE_OFFPEAK_INTERVAL_MINUTES"])
 
+    def test_update_backup_retention_defaults_to_one(self):
+        with self.CONFIG_TEMPLATE.open("r", encoding="utf-8-sig") as file:
+            config = json.load(file)
+        self.assertEqual(1, config["UPDATE_BACKUP_RETENTION"])
+
     def test_local_output_is_separate_from_remote_aggregate(self):
         with self.CONFIG_TEMPLATE.open("r", encoding="utf-8-sig") as file:
             config = json.load(file)

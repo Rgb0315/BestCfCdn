@@ -84,6 +84,7 @@ if [[ -e $CONFIG_PATH && $HAD_CONFIG != true ]]; then
 fi
 
 PYTHON_PATH=""
+BACKUP_RETENTION=1
 if [[ -x $SCRIPT_DIR/.venv/bin/python ]]; then
     PYTHON_PATH="$SCRIPT_DIR/.venv/bin/python"
 elif command -v python3 >/dev/null 2>&1; then
@@ -96,7 +97,7 @@ if [[ $HAD_CONFIG == true ]]; then
         echo -e "${YELLOW}⚠️ 已有 config.json，但尚无可用 Python；本次跳过自动更新。${NC}" >&2
         exit 12
     fi
-    if ! "$PYTHON_PATH" - "$CONFIG_PATH" <<'PY'
+    if ! BACKUP_RETENTION=$("$PYTHON_PATH" - "$CONFIG_PATH" <<'PY'
 import json
 import sys
 
@@ -104,12 +105,67 @@ with open(sys.argv[1], encoding="utf-8-sig") as file:
     config = json.load(file)
 if not isinstance(config, dict):
     raise ValueError("config.json 顶层必须是 JSON 对象")
+retention = config.get("UPDATE_BACKUP_RETENTION", 1)
+if type(retention) is not int or retention not in (0, 1):
+    raise ValueError("UPDATE_BACKUP_RETENTION 只能是 0 或 1")
+print(retention)
 PY
-    then
-        echo -e "${RED}❌ config.json 不是有效的 JSON，未执行更新。${NC}" >&2
+    ); then
+        echo -e "${RED}❌ config.json 无效，或 UPDATE_BACKUP_RETENTION 不是 0/1；未执行更新。${NC}" >&2
         exit 2
     fi
 fi
+
+LATEST_BACKUP_DIR="${HOME%/}/bestcfcdn_backup_latest"
+
+collect_managed_backups() {
+    MANAGED_BACKUPS=()
+    local path name
+    shopt -s nullglob
+    for path in "${HOME%/}"/bestcfcdn_backup_*; do
+        name=${path##*/}
+        [[ $name =~ ^bestcfcdn_backup_(latest|[0-9]{8}_[0-9]{6}(_[0-9]{3})?(\.[A-Za-z0-9]+)?)$ ]] || continue
+        if [[ -L $path ]]; then
+            echo -e "${RED}❌ 备份路径是符号链接，已拒绝自动清理：$path${NC}" >&2
+            return 1
+        fi
+        [[ -d $path ]] && MANAGED_BACKUPS+=("$path")
+    done
+    shopt -u nullglob
+}
+
+remove_managed_backups() {
+    collect_managed_backups || return 1
+    local path
+    for path in "${MANAGED_BACKUPS[@]:-}"; do
+        [[ -n $path ]] && rm -rf -- "$path"
+    done
+    return 0
+}
+
+apply_backup_retention() {
+    collect_managed_backups || return 1
+    if [[ $BACKUP_RETENTION == 0 ]]; then
+        local path
+        for path in "${MANAGED_BACKUPS[@]:-}"; do
+            [[ -n $path ]] && rm -rf -- "$path"
+        done
+        return 0
+    fi
+
+    ((${#MANAGED_BACKUPS[@]} > 0)) || return 0
+    local newest=${MANAGED_BACKUPS[0]} path
+    for path in "${MANAGED_BACKUPS[@]:1}"; do
+        [[ $path -nt $newest ]] && newest=$path
+    done
+    for path in "${MANAGED_BACKUPS[@]}"; do
+        [[ $path == "$newest" ]] || rm -rf -- "$path"
+    done
+    if [[ $newest != "$LATEST_BACKUP_DIR" ]]; then
+        mv -f -- "$newest" "$LATEST_BACKUP_DIR"
+    fi
+    chmod 700 "$LATEST_BACKUP_DIR"
+}
 
 CURRENT_BRANCH="$(git branch --show-current)"
 if [[ $CURRENT_BRANCH != "$BRANCH" ]]; then
@@ -253,13 +309,16 @@ fi
 SOURCE_CHANGE=false
 [[ $START_HEAD != "$REMOTE_HEAD" ]] && SOURCE_CHANGE=true
 if [[ $SOURCE_CHANGE != true && $CONFIG_CHANGE != true && $HAD_LEGACY_IP != true ]]; then
+    apply_backup_retention
     UPDATE_SUCCEEDED=true
-    echo -e "${GREEN}✅ 已是最新版，config.json 字段也完整。${NC}"
+    echo -e "${GREEN}✅ 已是最新版，config.json 字段也完整；未创建新备份。${NC}"
     exit 0
 fi
 
 if [[ $HAD_CONFIG == true || $HAD_LOCAL_IP == true || $HAD_LEGACY_IP == true ]]; then
-    BACKUP_DIR="$(mktemp -d "${HOME%/}/bestcfcdn_backup_$(date +%Y%m%d_%H%M%S).XXXXXX")"
+    remove_managed_backups
+    BACKUP_DIR="$LATEST_BACKUP_DIR"
+    mkdir -p "$BACKUP_DIR"
     chmod 700 "$BACKUP_DIR"
     if [[ $HAD_CONFIG == true ]]; then
         cp -f "$CONFIG_PATH" "$BACKUP_DIR/config.json"
@@ -309,6 +368,13 @@ elif [[ $HAD_LEGACY_IP == true && -n $BACKUP_DIR ]]; then
 fi
 
 UPDATE_SUCCEEDED=true
+if [[ $BACKUP_RETENTION == 0 ]]; then
+    remove_managed_backups
+    BACKUP_DIR=""
+    echo "已按配置在成功更新后移除备份（UPDATE_BACKUP_RETENTION=0）。"
+else
+    apply_backup_retention
+fi
 echo -e "${GREEN}✅ 更新完成，已保留本机配置与本机优选结果。${NC}"
 echo "未执行 reset --hard，也未将 Token 写入 Git URL。"
 if [[ -n $BACKUP_DIR ]]; then
