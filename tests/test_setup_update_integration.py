@@ -82,6 +82,7 @@ class SetupUpdateIntegrationTests(unittest.TestCase):
         }
         if version >= 2:
             template["NEW_SETTING"] = 42
+            template["UPDATE_BACKUP_RETENTION"] = 1
         (self.seed / "config.example.json").write_text(
             json.dumps(template, ensure_ascii=False, indent=4) + "\n",
             encoding="utf-8",
@@ -145,6 +146,10 @@ class SetupUpdateIntegrationTests(unittest.TestCase):
             json.dumps(local_config, ensure_ascii=False, indent=4) + "\n",
             encoding="utf-8",
         )
+        for suffix in ("20260701_010101_001", "20260702_020202.abc123"):
+            legacy = self.home / f"bestcfcdn_backup_{suffix}"
+            legacy.mkdir()
+            (legacy / "config.json").write_text("{}\n", encoding="utf-8")
         self._push_v2()
 
         command = [
@@ -167,6 +172,7 @@ class SetupUpdateIntegrationTests(unittest.TestCase):
 
         backups = sorted(self.home.glob("bestcfcdn_backup_*"))
         self.assertEqual(1, len(backups))
+        self.assertEqual("bestcfcdn_backup_latest", backups[0].name)
         self.assertEqual("700", oct(stat.S_IMODE(backups[0].stat().st_mode))[2:])
         self.assertEqual(
             "600",
@@ -175,6 +181,111 @@ class SetupUpdateIntegrationTests(unittest.TestCase):
 
         run(command, self.client, env=self._environment())
         self.assertEqual(backups, sorted(self.home.glob("bestcfcdn_backup_*")))
+
+    def test_retention_zero_removes_backup_after_success(self):
+        local_config = {
+            "GITHUB_SYNC_FIELD_ID": "device-a",
+            "UPDATE_BACKUP_RETENTION": 0,
+        }
+        (self.client / "config.json").write_text(
+            json.dumps(local_config, ensure_ascii=False, indent=4) + "\n",
+            encoding="utf-8",
+        )
+        legacy = self.home / "bestcfcdn_backup_20260701_010101_001"
+        legacy.mkdir()
+        (legacy / "config.json").write_text("{}\n", encoding="utf-8")
+        self._push_v2()
+
+        completed = run(
+            [
+                "bash",
+                "update_fork.sh",
+                "--non-interactive",
+                "--preserve-missing-config",
+            ],
+            self.client,
+            env=self._environment(),
+        )
+
+        self.assertEqual([], list(self.home.glob("bestcfcdn_backup_*")))
+        self.assertIn("按配置在成功更新后移除备份", completed.stdout)
+
+    def test_invalid_retention_is_rejected_before_update(self):
+        local_config = {
+            "GITHUB_SYNC_FIELD_ID": "device-a",
+            "UPDATE_BACKUP_RETENTION": 2,
+        }
+        (self.client / "config.json").write_text(
+            json.dumps(local_config, ensure_ascii=False, indent=4) + "\n",
+            encoding="utf-8",
+        )
+        self._push_v2()
+
+        completed = subprocess.run(
+            [
+                "bash",
+                "update_fork.sh",
+                "--non-interactive",
+                "--preserve-missing-config",
+            ],
+            cwd=self.client,
+            env=self._environment(),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        self.assertIn("UPDATE_BACKUP_RETENTION", completed.stderr)
+        self.assertNotEqual(
+            run(["git", "rev-parse", "HEAD"], self.client).stdout,
+            run(["git", "rev-parse", "HEAD"], self.seed).stdout,
+        )
+
+    def test_failed_update_keeps_one_rescue_backup_when_retention_is_zero(self):
+        local_config = {
+            "GITHUB_SYNC_FIELD_ID": "device-a",
+            "UPDATE_BACKUP_RETENTION": 0,
+        }
+        (self.client / "config.json").write_text(
+            json.dumps(local_config, ensure_ascii=False, indent=4) + "\n",
+            encoding="utf-8",
+        )
+        (self.client / "ip.local.txt").write_text(
+            "104.16.0.1:443#device-a\n", encoding="utf-8"
+        )
+        (self.seed / "ip.local.txt").write_text(
+            "remote file that must not overwrite local state\n", encoding="utf-8"
+        )
+        run(["git", "add", "ip.local.txt"], self.seed)
+        run(["git", "commit", "-m", "introduce collision"], self.seed)
+        run(["git", "push", "origin", "main"], self.seed)
+
+        completed = subprocess.run(
+            [
+                "bash",
+                "update_fork.sh",
+                "--non-interactive",
+                "--preserve-missing-config",
+            ],
+            cwd=self.client,
+            env=self._environment(),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        self.assertNotEqual(0, completed.returncode)
+        backups = list(self.home.glob("bestcfcdn_backup_*"))
+        self.assertEqual([self.home / "bestcfcdn_backup_latest"], backups)
+        self.assertEqual(
+            "104.16.0.1:443#device-a\n",
+            (self.client / "ip.local.txt").read_text(encoding="utf-8"),
+        )
+        self.assertTrue((backups[0] / "config.json").is_file())
+        self.assertTrue((backups[0] / "ip.local.txt").is_file())
 
     def test_updater_preserves_custom_schedule_intervals(self):
         local_config = {

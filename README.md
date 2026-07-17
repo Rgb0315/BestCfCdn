@@ -58,6 +58,7 @@ bash setup.sh
 - `GITHUB_SYNC_FIELD_ID` - 使用不含个人信息的别名，例如 `device-a`；该值会出现在公开的 `ip.txt` 中
 - `GITHUB_SYNC_TOKEN` / `GITHUB_SYNC_REPOSITORY` - 启用 GitHub 同步时填写
 - `GITHUB_SYNC_MAX_RETRIES` - 不使用 GitHub 同步时设为 `0`
+- `UPDATE_BACKUP_RETENTION` - `1` 仅保留最新一份更新备份；`0` 在更新成功后不保留（失败时仍保留救援备份）
 - `ENABLE_SCHEDULED_TASK` - `true` 自动运行；`false` 仅手动运行
 - `CF_ENABLED` - 启用 DNS 更新时填写 Cloudflare Token、Zone ID 和记录名称
 - `ENABLE_WXPUSHER` - 启用异常通知时填写 App Token 和 UID
@@ -85,6 +86,7 @@ bash setup.sh
 - 📄 **本地结果** - 当前终端结果保存在 `ip.local.txt`
 - 🌐 **远端结果** - 多终端汇总保存在 GitHub `ip.txt`，每个终端默认最多上传 5 行
 - 🔐 **配置安全** - `config.json` 会被 Git 忽略，但仍是明文文件，请使用最小权限 Token
+- 💾 **更新备份** - 无变化时不创建备份；默认固定保留最新一份于用户主目录，不会按时间戳无限累积
 - 🧩 **DNS 模式** - `TXT` 保存 `IP:端口`；`A` 保存纯 IPv4，作为入口域名时保持 `CF_PROXIED=false`
 
 ### 适用范围
@@ -108,7 +110,7 @@ bash setup.sh
 - ⚖️ **體驗評分** - 綜合回應速度、穩定性和頻寬，避免只追求單項最高值
 - 🏆 **最佳輸出** - 全域模式預設保留綜合體驗最好的 5 個節點
 - 📤 **多終端同步** - 每台終端只替換遠端 `ip.txt` 中屬於自己的記錄
-- ⏱️ **峰谷排程** - 北京時間 18:00–24:00 每 15 分鐘執行，其餘時段每 30 分鐘執行
+- ⏱️ **峰谷排程** - 北京時間 18:00–24:00 每 30 分鐘執行，其餘時段每 60 分鐘執行
 - 🖥️ **一鍵部署** - setup 自動更新程式碼、建立 `.venv`、安裝依賴並管理排程任務
 - ☁️ **可選發佈** - 支援 GitHub、Cloudflare DNS 和 WxPusher 異常通知
 
@@ -147,6 +149,7 @@ bash setup.sh
 - `GITHUB_SYNC_FIELD_ID` - 使用不含個人資訊的別名，例如 `device-a`；該值會出現在公開的 `ip.txt` 中
 - `GITHUB_SYNC_TOKEN` / `GITHUB_SYNC_REPOSITORY` - 啟用 GitHub 同步時填寫
 - `GITHUB_SYNC_MAX_RETRIES` - 不使用 GitHub 同步時設為 `0`
+- `UPDATE_BACKUP_RETENTION` - `1` 僅保留最新一份更新備份；`0` 在更新成功後不保留（失敗時仍保留救援備份）
 - `ENABLE_SCHEDULED_TASK` - `true` 自動執行；`false` 僅手動執行
 - `CF_ENABLED` - 啟用 DNS 更新時填寫 Cloudflare Token、Zone ID 和記錄名稱
 - `ENABLE_WXPUSHER` - 啟用異常通知時填寫 App Token 和 UID
@@ -174,6 +177,7 @@ bash setup.sh
 - 📄 **本機結果** - 目前終端結果儲存在 `ip.local.txt`
 - 🌐 **遠端結果** - 多終端彙總儲存在 GitHub `ip.txt`，每個終端預設最多上傳 5 行
 - 🔐 **設定安全** - `config.json` 會被 Git 忽略，但仍是明文檔案，請使用最小權限 Token
+- 💾 **更新備份** - 沒有變更時不建立備份；預設固定保留最新一份於使用者主目錄，不會依時間戳無限累積
 - 🧩 **DNS 模式** - `TXT` 儲存 `IP:連接埠`；`A` 儲存純 IPv4，作為入口網域時保持 `CF_PROXIED=false`
 
 ### 適用範圍
@@ -197,7 +201,7 @@ A cross-platform IP selection tool for Cloudflare CDN and EdgeTunnel proxy scena
 - ⚖️ **Experience scoring** - Balances responsiveness, stability, and bandwidth instead of maximizing one metric
 - 🏆 **Best endpoint output** - Keeps the five best overall endpoints by default
 - 📤 **Multi-device sync** - Each device replaces only its own lines in the remote `ip.txt`
-- ⏱️ **Peak/off-peak schedule** - Runs every 15 minutes from 18:00 to 24:00 Beijing time and every 30 minutes otherwise
+- ⏱️ **Peak/off-peak schedule** - Runs every 30 minutes from 18:00 to 24:00 Beijing time and every 60 minutes otherwise
 - 🖥️ **One-command setup** - Setup updates code, creates `.venv`, installs dependencies, and manages scheduled tasks
 - ☁️ **Optional publishing** - Supports GitHub, Cloudflare DNS, and WxPusher error notifications
 
@@ -236,6 +240,7 @@ The first run only creates `config.json` and exits. Edit the configuration befor
 - `GITHUB_SYNC_FIELD_ID` - Use a non-identifying alias such as `device-a`; this value appears in public `ip.txt`
 - `GITHUB_SYNC_TOKEN` / `GITHUB_SYNC_REPOSITORY` - Fill these in when GitHub sync is enabled
 - `GITHUB_SYNC_MAX_RETRIES` - Set to `0` when GitHub sync is not needed
+- `UPDATE_BACKUP_RETENTION` - `1` keeps only the latest update backup; `0` removes it after a successful update (a rescue backup is still kept after failure)
 - `ENABLE_SCHEDULED_TASK` - `true` for automatic runs or `false` for manual-only mode
 - `CF_ENABLED` - When enabling DNS updates, fill in the Cloudflare token, Zone ID, and record name
 - `ENABLE_WXPUSHER` - When enabling error notifications, fill in the App Token and UID
@@ -263,6 +268,7 @@ Run manually:
 - 📄 **Local results** - Results for the current device are stored in `ip.local.txt`
 - 🌐 **Remote results** - Aggregated results are stored in GitHub `ip.txt`, with five lines per device by default
 - 🔐 **Configuration safety** - Git ignores `config.json`, but it remains plaintext; use least-privilege tokens
+- 💾 **Update backups** - No backup is created when nothing changed; by default one latest backup is kept in the user home directory without timestamp accumulation
 - 🧩 **DNS modes** - `TXT` stores `IP:port`; `A` stores plain IPv4 and should keep `CF_PROXIED=false` for an entry hostname
 
 ### Compatibility
