@@ -94,6 +94,39 @@ class MeasurementFlowTests(unittest.TestCase):
         self.assertAlmostEqual(100, latency)
         self.assertAlmostEqual(900, jitter)
 
+    def test_chain_http_accepts_two_successes_out_of_three(self):
+        def chain_stdout(code, start):
+            return f"{main._CHAIN_WRITE_OUT_MARKER}{code}\t{start}\t{start + 0.1}\n"
+
+        completed = [
+            subprocess.CompletedProcess([], 0, stdout=chain_stdout(200, 0.3), stderr=""),
+            subprocess.CompletedProcess([], 7, stdout="", stderr="failed to connect"),
+            subprocess.CompletedProcess([], 0, stdout=chain_stdout(200, 0.5), stderr=""),
+        ]
+        with mock.patch.multiple(
+            main,
+            CHAIN_PROXY_MIN_SUCCESS_RATE=0.66,
+            HTTP_TEST_CONNECT_TIMEOUT=1,
+            HTTP_TEST_TIMEOUT=2,
+            BANDWIDTH_PROCESS_BUFFER=1,
+        ), mock.patch("main.subprocess.run", side_effect=completed) as run:
+            node, valid, _, latency, jitter, success_rate = main.measure_chain_http(
+                "104.16.0.1:443#US", 31001, "curl.exe", samples=3
+            )
+
+        self.assertEqual("104.16.0.1:443#US", node)
+        self.assertTrue(valid)
+        self.assertAlmostEqual(2 / 3, success_rate)
+        self.assertAlmostEqual(400, latency)
+        self.assertAlmostEqual(100, jitter)
+        command = run.call_args.args[0]
+        self.assertEqual(
+            "socks5h://127.0.0.1:31001",
+            command[command.index("--proxy") + 1],
+        )
+        self.assertEqual("", command[command.index("--noproxy") + 1])
+        self.assertNotIn("--connect-to", command)
+
     def test_bandwidth_curl_automatically_negotiates_http_version(self):
         def fake_run(command, **kwargs):
             if any(flag in command for flag in ("--http2", "--http1.1", "--http3")):
@@ -138,6 +171,26 @@ class MeasurementFlowTests(unittest.TestCase):
         command = run.call_args.args[0]
         connect_to = command[command.index("--connect-to") + 1]
         self.assertEqual("speed.cloudflare.com:443:104.16.0.1:8443", connect_to)
+
+    def test_bandwidth_curl_uses_chain_proxy_without_direct_override(self):
+        completed = subprocess.CompletedProcess(
+            [], 0, stdout=self.bandwidth_stdout(), stderr=""
+        )
+        with mock.patch("main.subprocess.run", return_value=completed) as run:
+            result = main.measure_bandwidth_curl(
+                "104.16.0.1:443#US",
+                curl_path="curl.exe",
+                proxy_url="socks5h://127.0.0.1:31001",
+            )
+
+        self.assertTrue(result.valid)
+        command = run.call_args.args[0]
+        self.assertEqual(
+            "socks5h://127.0.0.1:31001",
+            command[command.index("--proxy") + 1],
+        )
+        self.assertEqual("", command[command.index("--noproxy") + 1])
+        self.assertNotIn("--connect-to", command)
 
     def test_bandwidth_timeout_with_useful_partial_sample_is_valid(self):
         completed = subprocess.CompletedProcess(

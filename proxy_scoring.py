@@ -32,6 +32,7 @@ class ProxyScore:
     tcp_latency_ms: Optional[float]
     http_latency_ms: Optional[float]
     http_jitter_ms: Optional[float]
+    success_rate: Optional[float] = None
 
 
 def _finite_number(value):
@@ -74,6 +75,121 @@ def _speed_utility(speed_mbps, scale_mbps):
 def _latency_utility(latency_ms, reference_ms):
     ratio = latency_ms / reference_ms
     return 1.0 / (1.0 + ratio * ratio)
+
+
+def _relative_utilities(values, *, higher_is_better):
+    """计算单轮候选池中支持并列值的相对百分位效用。"""
+    # ponytail: 约150个候选时 O(n²) 更简单；候选上限显著增加后改为一次排序。
+    finite = [value for value in values if value is not None]
+    if not finite:
+        return [None] * len(values)
+    if len(finite) == 1:
+        return [1.0 if value is not None else None for value in values]
+    result = []
+    for value in values:
+        if value is None:
+            result.append(None)
+            continue
+        below = sum(other < value for other in finite)
+        equal = sum(other == value for other in finite)
+        percentile = (below + (equal - 1) / 2) / (len(finite) - 1)
+        result.append(percentile if higher_is_better else 1.0 - percentile)
+    return result
+
+
+def rank_chain_candidates(
+    bandwidth_results,
+    http_latency_map,
+    http_jitter_map,
+    success_rate_map,
+    config,
+    tcp_latency_map=None,
+):
+    """按当前候选池相对排名真实全链路测量结果。"""
+    if not bandwidth_results:
+        return []
+    tcp_latency_map = tcp_latency_map or {}
+    weights = {
+        "bandwidth": _setting(config, "PROXY_SCORE_BANDWIDTH_WEIGHT"),
+        "http_latency": _setting(config, "PROXY_SCORE_HTTP_LATENCY_WEIGHT"),
+        "jitter": _setting(config, "PROXY_SCORE_JITTER_WEIGHT"),
+        "success": _setting(config, "PROXY_SCORE_TCP_LATENCY_WEIGHT"),
+    }
+    min_success = _finite_number(config.get("CHAIN_PROXY_MIN_SUCCESS_RATE", 2 / 3))
+    if min_success is None or min_success > 1:
+        raise ValueError("CHAIN_PROXY_MIN_SUCCESS_RATE 必须是 0 到 1 的有限数值")
+
+    metrics = []
+    for node, raw_speed in bandwidth_results:
+        tcp_seconds = _finite_number(tcp_latency_map.get(node))
+        metrics.append(
+            {
+                "node": node,
+                "bandwidth": _finite_number(raw_speed) or 0.0,
+                "http_latency": _finite_number(http_latency_map.get(node)),
+                "jitter": _finite_number(http_jitter_map.get(node)),
+                "success": _finite_number(success_rate_map.get(node)),
+                "tcp_latency": tcp_seconds * 1000 if tcp_seconds is not None else None,
+            }
+        )
+
+    utilities = {
+        "bandwidth": _relative_utilities(
+            [item["bandwidth"] for item in metrics], higher_is_better=True
+        ),
+        "http_latency": _relative_utilities(
+            [item["http_latency"] for item in metrics], higher_is_better=False
+        ),
+        "jitter": _relative_utilities(
+            [item["jitter"] for item in metrics], higher_is_better=False
+        ),
+        "success": _relative_utilities(
+            [item["success"] for item in metrics], higher_is_better=True
+        ),
+    }
+    ranked = []
+    for index, item in enumerate(metrics):
+        available = [name for name in weights if utilities[name][index] is not None]
+        effective_weight = sum(weights[name] for name in available)
+        score = (
+            100
+            * sum(weights[name] * utilities[name][index] for name in available)
+            / effective_weight
+            if effective_weight
+            else 0.0
+        )
+        issues = []
+        if item["http_latency"] is None:
+            issues.append("缺少链式HTTP延迟")
+        if item["jitter"] is None:
+            issues.append("缺少链式HTTP抖动")
+        if item["success"] is None or item["success"] < min_success:
+            issues.append("链式成功率低于门槛")
+        ranked.append(
+            ProxyScore(
+                node=item["node"],
+                score=score,
+                qualified=not issues,
+                quality_issues=tuple(issues),
+                bandwidth_mbps=item["bandwidth"],
+                tcp_latency_ms=item["tcp_latency"],
+                http_latency_ms=item["http_latency"],
+                http_jitter_ms=item["jitter"],
+                success_rate=item["success"],
+            )
+        )
+
+    infinity = float("inf")
+    ranked.sort(
+        key=lambda item: (
+            not item.qualified,
+            -item.score,
+            -(item.success_rate if item.success_rate is not None else -1),
+            item.http_latency_ms if item.http_latency_ms is not None else infinity,
+            item.node,
+        )
+    )
+    return ranked
 
 
 def rank_proxy_candidates(

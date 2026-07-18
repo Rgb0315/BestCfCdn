@@ -1,6 +1,7 @@
 import unittest
 
 from proxy_scoring import (
+    rank_chain_candidates,
     rank_proxy_candidates,
     select_proxy_candidates,
     summarize_latency_samples,
@@ -27,6 +28,31 @@ def metrics_config(**overrides):
 
 
 class ProxyScoringTests(unittest.TestCase):
+    def test_chain_ranking_uses_relative_end_to_end_metrics(self):
+        ranked = rank_chain_candidates(
+            [("fast", 20), ("stable", 10), ("slow", 5)],
+            {"fast": 240, "stable": 180, "slow": 500},
+            {"fast": 80, "stable": 10, "slow": 100},
+            {"fast": 2 / 3, "stable": 1.0, "slow": 1.0},
+            {**metrics_config(), "CHAIN_PROXY_MIN_SUCCESS_RATE": 2 / 3},
+        )
+
+        self.assertEqual("stable", ranked[0].node)
+        self.assertEqual(1.0, ranked[0].success_rate)
+        self.assertTrue(ranked[0].qualified)
+
+    def test_chain_ranking_marks_low_success_as_unqualified(self):
+        ranked = rank_chain_candidates(
+            [("unreliable", 100), ("reliable", 10)],
+            {"unreliable": 10, "reliable": 100},
+            {"unreliable": 1, "reliable": 10},
+            {"unreliable": 0.5, "reliable": 1.0},
+            {**metrics_config(), "CHAIN_PROXY_MIN_SUCCESS_RATE": 2 / 3},
+        )
+
+        self.assertEqual("reliable", ranked[0].node)
+        self.assertFalse(ranked[1].qualified)
+
     def test_latency_summary_uses_median_and_tail_jitter(self):
         median, jitter = summarize_latency_samples([10, 20, 30, 40, 200])
         self.assertEqual(30, median)

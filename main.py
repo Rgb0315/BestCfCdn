@@ -26,8 +26,15 @@ import asyncio
 import aiohttp
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from chain_proxy import (
+    ChainProxyError,
+    SingBoxRuntime,
+    extract_chain_template,
+    resolve_sing_box_path,
+)
 from local_state import resolve_local_output
 from proxy_scoring import (
+    rank_chain_candidates,
     rank_proxy_candidates,
     select_proxy_candidates,
     summarize_latency_samples,
@@ -190,6 +197,12 @@ def load_config():
         "GLOBAL_TOP_N": 3,
         "PER_COUNTRY_TOP_N": 1,
         "BANDWIDTH_CANDIDATES": 150,
+        "CHAIN_PROXY_TEST_ENABLED": False,
+        "CHAIN_PROXY_SUBSCRIPTION_URL": "",
+        "CHAIN_PROXY_CORE_PATH": "",
+        "CHAIN_PROXY_TEST_SAMPLES": 3,
+        "CHAIN_PROXY_MIN_SUCCESS_RATE": 0.66,
+        "CHAIN_PROXY_WORKERS": 4,
         "TCP_PROBES": 4,
         "MIN_SUCCESS_RATE": 0.75,
         "TIMEOUT": 3.0,
@@ -325,6 +338,12 @@ USE_GLOBAL_MODE = cfg["USE_GLOBAL_MODE"]
 GLOBAL_TOP_N = cfg["GLOBAL_TOP_N"]
 PER_COUNTRY_TOP_N = cfg["PER_COUNTRY_TOP_N"]
 BANDWIDTH_CANDIDATES = cfg["BANDWIDTH_CANDIDATES"]
+CHAIN_PROXY_TEST_ENABLED = cfg["CHAIN_PROXY_TEST_ENABLED"]
+CHAIN_PROXY_SUBSCRIPTION_URL = cfg["CHAIN_PROXY_SUBSCRIPTION_URL"]
+CHAIN_PROXY_CORE_PATH = cfg["CHAIN_PROXY_CORE_PATH"]
+CHAIN_PROXY_TEST_SAMPLES = cfg["CHAIN_PROXY_TEST_SAMPLES"]
+CHAIN_PROXY_MIN_SUCCESS_RATE = cfg["CHAIN_PROXY_MIN_SUCCESS_RATE"]
+CHAIN_PROXY_WORKERS = cfg["CHAIN_PROXY_WORKERS"]
 TCP_PROBES = cfg["TCP_PROBES"]
 MIN_SUCCESS_RATE = cfg["MIN_SUCCESS_RATE"]
 TIMEOUT = cfg["TIMEOUT"]
@@ -1227,6 +1246,188 @@ def http_server_filter(candidates, config):
     print(f"HTTP检测经 {max_rounds} 轮重试后仍无节点通过，降级使用过滤前候选列表。")
     return candidates, {}, {}
 
+
+_CHAIN_WRITE_OUT_MARKER = "__BESTCFCDN_CHAIN__"
+_MAX_CHAIN_SUBSCRIPTION_BYTES = 2 * 1024 * 1024
+
+
+def fetch_chain_template():
+    if not str(CHAIN_PROXY_SUBSCRIPTION_URL or "").strip():
+        raise ChainProxyError(
+            "已启用链式测速，但 CHAIN_PROXY_SUBSCRIPTION_URL 为空"
+        )
+    try:
+        response = requests.get(
+            CHAIN_PROXY_SUBSCRIPTION_URL,
+            headers={"User-Agent": "BestCfCdn-chain-test"},
+            timeout=(FETCH_CONNECT_TIMEOUT, FETCH_TIMEOUT),
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise ChainProxyError("无法获取 CfGfwAX 链式订阅") from exc
+    if len(response.content) > _MAX_CHAIN_SUBSCRIPTION_BYTES:
+        raise ChainProxyError("CfGfwAX 链式订阅超过 2 MiB，已拒绝解析")
+    return extract_chain_template(response.text, CHAIN_PROXY_SUBSCRIPTION_URL)
+
+
+def _parse_chain_write_out(stdout):
+    for line in reversed((stdout or "").splitlines()):
+        if not line.startswith(_CHAIN_WRITE_OUT_MARKER):
+            continue
+        fields = line[len(_CHAIN_WRITE_OUT_MARKER):].split("\t")
+        if len(fields) != 3:
+            return None
+        try:
+            return int(fields[0]), float(fields[1]), float(fields[2])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def measure_chain_http(node, proxy_port, curl_path, samples=None):
+    try:
+        sample_count = max(3, int(samples or CHAIN_PROXY_TEST_SAMPLES))
+        min_success_rate = float(CHAIN_PROXY_MIN_SUCCESS_RATE)
+    except (TypeError, ValueError) as exc:
+        raise ChainProxyError("链式测速样本数或最低成功率配置无效") from exc
+    if not 0 < min_success_rate <= 1:
+        raise ChainProxyError("CHAIN_PROXY_MIN_SUCCESS_RATE 必须大于 0 且不超过 1")
+
+    target_url = BANDWIDTH_URL_TEMPLATE.format(bytes=1)
+    null_device = "NUL" if sys.platform == "win32" else "/dev/null"
+    write_out = (
+        f"{_CHAIN_WRITE_OUT_MARKER}%{{http_code}}\t"
+        "%{time_starttransfer}\t%{time_total}\n"
+    )
+    latencies = []
+    last_reason = "无有效响应"
+    for _ in range(sample_count):
+        command = [
+            curl_path,
+            "--silent",
+            "--show-error",
+            "--output",
+            null_device,
+            "--write-out",
+            write_out,
+            "--proxy",
+            f"socks5h://127.0.0.1:{proxy_port}",
+            "--noproxy",
+            "",
+            "--connect-timeout",
+            str(HTTP_TEST_CONNECT_TIMEOUT),
+            "--max-time",
+            str(HTTP_TEST_TIMEOUT),
+            target_url,
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=float(HTTP_TEST_TIMEOUT) + float(BANDWIDTH_PROCESS_BUFFER),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            last_reason = "curl 执行失败或超时"
+            continue
+        metrics = _parse_chain_write_out(result.stdout)
+        if not metrics:
+            last_reason = _curl_failure_reason(result.returncode, result.stderr)
+            continue
+        http_code, time_starttransfer, _ = metrics
+        if result.returncode or not 200 <= http_code < 300:
+            last_reason = (
+                _curl_failure_reason(result.returncode, result.stderr)
+                if result.returncode
+                else f"HTTP {http_code}"
+            )
+            continue
+        if math.isfinite(time_starttransfer) and time_starttransfer > 0:
+            latencies.append(time_starttransfer * 1000)
+
+    success_rate = len(latencies) / sample_count
+    median_latency, jitter = summarize_latency_samples(latencies)
+    valid = success_rate >= min_success_rate and median_latency is not None
+    return node, valid, last_reason, median_latency, jitter, success_rate
+
+
+def chain_http_filter(candidates, proxy_ports):
+    curl_path = shutil.which("curl")
+    if not curl_path:
+        raise ChainProxyError("链式测速需要 curl，但当前系统未找到")
+    try:
+        workers = max(1, int(CHAIN_PROXY_WORKERS))
+        sample_count = max(3, int(CHAIN_PROXY_TEST_SAMPLES))
+    except (TypeError, ValueError) as exc:
+        raise ChainProxyError("CHAIN_PROXY_WORKERS 和样本数必须是正整数") from exc
+
+    print(
+        f"\n开始全链路 HTTP 测试（{len(candidates)} 个节点，"
+        f"并发 {workers}，每节点至少 {sample_count} 次）..."
+    )
+    passed = []
+    latency_map = {}
+    jitter_map = {}
+    success_rate_map = {}
+    failures = Counter()
+    completed = 0
+    total = len(candidates)
+    last_print = time.time()
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(
+                measure_chain_http, node, proxy_ports[node], curl_path
+            ): node
+            for node in candidates
+        }
+        for future in as_completed(futures):
+            completed += 1
+            node = futures[future]
+            try:
+                node, valid, reason, latency, jitter, success_rate = future.result()
+            except Exception:
+                valid, reason, latency, jitter, success_rate = (
+                    False,
+                    "链式测速线程异常",
+                    None,
+                    None,
+                    0.0,
+                )
+            if valid:
+                passed.append(node)
+                latency_map[node] = latency
+                jitter_map[node] = jitter
+                success_rate_map[node] = success_rate
+            else:
+                failures[reason] += 1
+            now = time.time()
+            if now - last_print >= PROGRESS_PRINT_INTERVAL or completed == total:
+                print(
+                    f"\r[链式HTTP] 进度：{completed}/{total} "
+                    f"({completed/total*100:.1f}%) 通过数量：{len(passed)}",
+                    end="",
+                    flush=True,
+                )
+                last_print = now
+    print()
+    if failures:
+        print(
+            "链式HTTP失败统计："
+            + "；".join(
+                f"{reason} ×{count}"
+                for reason, count in sorted(
+                    failures.items(), key=lambda item: (-item[1], item[0])
+                )
+            )
+        )
+    if not passed:
+        raise ChainProxyError("所有候选节点的全链路 HTTP 测试均失败")
+    print(f"全链路 HTTP 测试通过 {len(passed)} 个节点")
+    return passed, latency_map, jitter_map, success_rate_map
+
+
 _BANDWIDTH_WRITE_OUT_MARKER = "__BESTCFCDN_BW__"
 _BANDWIDTH_COMPLETE_RATIO = 0.95
 _RETRYABLE_CURL_CODES = frozenset((5, 6, 7, 16, 18, 28, 35, 52, 55, 56, 92))
@@ -1345,7 +1546,9 @@ def _curl_failure_reason(returncode, stderr=""):
     return reasons.get(returncode, f"curl 退出码 {returncode}")
 
 
-def measure_bandwidth_curl(node_str, curl_path=None, target=None, settings=None):
+def measure_bandwidth_curl(
+    node_str, curl_path=None, target=None, settings=None, proxy_url=None
+):
     m = IP_PORT_PATTERN.match(node_str)
     if not m:
         return _failed_bandwidth_measurement(node_str, "节点格式无效")
@@ -1388,16 +1591,25 @@ def measure_bandwidth_curl(node_str, curl_path=None, target=None, settings=None)
         "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 "
         "Safari/537.36",
-        "--noproxy",
-        "*",
-        "--connect-to",
-        f"{target_host}:{logical_port}:{ip}:{candidate_port}",
+    ]
+    if proxy_url:
+        curl_cmd.extend(["--proxy", proxy_url, "--noproxy", ""])
+    else:
+        curl_cmd.extend(
+            [
+                "--noproxy",
+                "*",
+                "--connect-to",
+                f"{target_host}:{logical_port}:{ip}:{candidate_port}",
+            ]
+        )
+    curl_cmd.extend([
         "--connect-timeout",
         str(BANDWIDTH_CONNECT_TIMEOUT),
         "--max-time",
         str(BANDWIDTH_TIMEOUT),
         BANDWIDTH_URL,
-    ]
+    ])
 
     try:
         result = subprocess.run(
@@ -1512,7 +1724,7 @@ def _print_bandwidth_summary(measurements):
         print(f"  失败统计：{summary}")
 
 
-def bandwidth_filter(candidates):
+def bandwidth_filter(candidates, proxy_ports=None):
     if not candidates:
         return []
 
@@ -1541,12 +1753,22 @@ def bandwidth_filter(candidates):
     last_print = time.time()
 
     with ThreadPoolExecutor(max_workers=BANDWIDTH_WORKERS) as executor:
-        futures = {
-            executor.submit(
-                measure_bandwidth_curl, node, curl_path, target, settings
-            ): node
-            for node in candidates
-        }
+        futures = {}
+        for node in candidates:
+            if proxy_ports is None:
+                future = executor.submit(
+                    measure_bandwidth_curl, node, curl_path, target, settings
+                )
+            else:
+                future = executor.submit(
+                    measure_bandwidth_curl,
+                    node,
+                    curl_path,
+                    target,
+                    settings,
+                    f"socks5h://127.0.0.1:{proxy_ports[node]}",
+                )
+            futures[future] = node
         for future in as_completed(futures):
             completed += 1
             node = futures[future]
@@ -1572,7 +1794,7 @@ def bandwidth_filter(candidates):
     return measurements
 
 
-def bandwidth_filter_with_retry(candidates):
+def bandwidth_filter_with_retry(candidates, proxy_ports=None):
     successful = {}
     failures = {}
     pending = list(candidates)
@@ -1586,7 +1808,12 @@ def bandwidth_filter_with_retry(candidates):
             f"（待测 {len(pending)} 个）..."
         )
         retryable_nodes = []
-        for measurement in bandwidth_filter(pending):
+        measurements = (
+            bandwidth_filter(pending)
+            if proxy_ports is None
+            else bandwidth_filter(pending, proxy_ports)
+        )
+        for measurement in measurements:
             if measurement.valid:
                 successful[measurement.node] = measurement
                 failures.pop(measurement.node, None)
@@ -2011,6 +2238,10 @@ def main():
     print(f"最低成功率要求：{MIN_SUCCESS_RATE*100:.0f}%")
     print(f"IP 可用性二次筛选：{'启用' if TEST_AVAILABILITY else '禁用'}（仅对候选节点）")
     print(f"HTTP检测：{'启用' if HTTP_TEST_ENABLED else '禁用'}（仅对候选节点）")
+    print(
+        f"链式代理测速：{'启用' if CHAIN_PROXY_TEST_ENABLED else '禁用'}"
+        "（启用时替代候选节点的直连可用性、HTTP 和带宽测试）"
+    )
     print(f"IPv6 客户端 IP 过滤（仅作用于DNS更新环节）：{'启用' if FILTER_IPV6_AVAILABILITY else '禁用'}")
     print(f"DNS黑名单过滤：{'启用' if FILTER_BLOCKED_COUNTRIES_ENABLED else '禁用'}，黑名单国家：{', '.join(BLOCKED_COUNTRIES)}")
     print(f"IP 风险等级过滤：{'启用' if DNS_IP_RISK_FILTER_ENABLED else '禁用'}（最高允许：{DNS_IP_RISK_MAX_LEVEL}）")
@@ -2128,12 +2359,41 @@ def main():
         print("没有候选节点，退出。")
         sys.exit(0)
 
-    candidates_after_availability, avail_ip_info, avail_exit_details = availability_filter_with_retry(candidates)
-    candidates_after_http, http_latency_map, http_jitter_map = http_server_filter(candidates_after_availability, cfg)
-
-    bw_results, _, bandwidth_rounds = (
-        bandwidth_filter_with_retry(candidates_after_http)
-    )
+    chain_success_rate_map = {}
+    if CHAIN_PROXY_TEST_ENABLED:
+        try:
+            template = fetch_chain_template()
+            core_path = resolve_sing_box_path(
+                CHAIN_PROXY_CORE_PATH, os.path.dirname(CONFIG_FILE)
+            )
+            with SingBoxRuntime(
+                core_path,
+                template,
+                candidates,
+            ) as chain_runtime:
+                candidates_after_availability = candidates
+                avail_ip_info = {}
+                avail_exit_details = {}
+                (
+                    candidates_after_http,
+                    http_latency_map,
+                    http_jitter_map,
+                    chain_success_rate_map,
+                ) = chain_http_filter(candidates, chain_runtime.proxy_ports)
+                bw_results, _, bandwidth_rounds = bandwidth_filter_with_retry(
+                    candidates_after_http, chain_runtime.proxy_ports
+                )
+        except ChainProxyError as exc:
+            message = f"链式代理测速已停止：{exc}"
+            print(f"\n错误：{message}")
+            send_wxpusher_notification(content=message, summary="链式代理测速失败")
+            sys.exit(1)
+    else:
+        candidates_after_availability, avail_ip_info, avail_exit_details = availability_filter_with_retry(candidates)
+        candidates_after_http, http_latency_map, http_jitter_map = http_server_filter(candidates_after_availability, cfg)
+        bw_results, _, bandwidth_rounds = bandwidth_filter_with_retry(
+            candidates_after_http
+        )
 
     bandwidth_available = bool(bw_results)
     if not bandwidth_available:
@@ -2155,13 +2415,23 @@ def main():
             for node in candidates_after_http
         ]
 
-    ranked_scores = rank_proxy_candidates(
-        scoring_results,
-        latency_map,
-        http_latency_map,
-        http_jitter_map,
-        cfg,
-    )
+    if CHAIN_PROXY_TEST_ENABLED:
+        ranked_scores = rank_chain_candidates(
+            scoring_results,
+            http_latency_map,
+            http_jitter_map,
+            chain_success_rate_map,
+            cfg,
+            tcp_latency_map=latency_map,
+        )
+    else:
+        ranked_scores = rank_proxy_candidates(
+            scoring_results,
+            latency_map,
+            http_latency_map,
+            http_jitter_map,
+            cfg,
+        )
     score_by_node = {item.node: item for item in ranked_scores}
     speed_map = {
         item.node: item.bandwidth_mbps for item in ranked_scores
@@ -2185,7 +2455,8 @@ def main():
             "代理体验门槛，已按综合得分作为低优先级补位。"
         )
 
-    print("\n================ 最终优选节点（代理体验综合评分） ================")
+    score_title = "全链路代理体验综合评分" if CHAIN_PROXY_TEST_ENABLED else "代理体验综合评分"
+    print(f"\n================ 最终优选节点（{score_title}） ================")
     for index, node in enumerate(final_selected, 1):
         item = score_by_node[node]
         line = f"{index}. {node} 综合 {item.score:.2f} 分"
@@ -2195,6 +2466,8 @@ def main():
             line += f" HTTP {item.http_latency_ms:.2f} ms"
         if item.http_jitter_ms is not None:
             line += f" 抖动 {item.http_jitter_ms:.2f} ms"
+        if item.success_rate is not None:
+            line += f" 成功率 {item.success_rate*100:.0f}%"
         if item.tcp_latency_ms is not None:
             line += f" TCP {item.tcp_latency_ms:.2f} ms"
         if not item.qualified:

@@ -18,6 +18,24 @@
     "BANDWIDTH_CANDIDATES": 150,
     "_comment_BANDWIDTH_CANDIDATES": "进入带宽测速的候选节点数（从TCP通过者中选取前N个）",
 
+    "CHAIN_PROXY_TEST_ENABLED": false,
+    "_comment_CHAIN_PROXY_TEST_ENABLED": "可选链式测速；true=从TCP前N个候选开始测试 客户端→CF节点→CfGfwAX→SOCKS5→目标服务器，false=保持原直连流程",
+
+    "CHAIN_PROXY_SUBSCRIPTION_URL": "",
+    "_comment_CHAIN_PROXY_SUBSCRIPTION_URL": "CfGfwAX mixed订阅地址，例如 https://代理域名/sub?token=***&target=mixed；含Token，请勿提交或打印",
+
+    "CHAIN_PROXY_CORE_PATH": "",
+    "_comment_CHAIN_PROXY_CORE_PATH": "sing-box可执行文件路径；留空时从PATH自动查找，启用链式测速但找不到时会停止而非降级直连",
+
+    "CHAIN_PROXY_TEST_SAMPLES": 3,
+    "_comment_CHAIN_PROXY_TEST_SAMPLES": "每个候选节点的全链路HTTP样本数，最少按3次执行",
+
+    "CHAIN_PROXY_MIN_SUCCESS_RATE": 0.66,
+    "_comment_CHAIN_PROXY_MIN_SUCCESS_RATE": "全链路HTTP最低成功率；默认3次中至少成功2次",
+
+    "CHAIN_PROXY_WORKERS": 4,
+    "_comment_CHAIN_PROXY_WORKERS": "全链路HTTP并发数；低并发可减少共享SOCKS5节点拥塞造成的排名偏差",
+
     "TCP_PROBES": 4,
     "_comment_TCP_PROBES": "每个节点测试 TCP 连接的次数；使用成功探测的中位数降低偶然波动",
 
@@ -237,7 +255,7 @@
     "BANDWIDTH_MIN_TRANSFER_SECONDS": 1.0,
     "_comment_BANDWIDTH_MIN_TRANSFER_SECONDS": "超时部分样本至少需要持续传输的秒数，避免短暂突发造成虚高测速",
 
-    "_comment_PROXY_SCORING": "代理体验综合评分 v2：带宽收益递减，HTTP 延迟优先，并考虑抖动与 TCP 延迟",
+    "_comment_PROXY_SCORING": "代理体验综合评分：直连模式使用固定效用尺度；链式模式按当轮候选池相对排名并将TCP权重用于全链路成功率",
     "PROXY_SCORE_BANDWIDTH_WEIGHT": 0.30,
     "_comment_PROXY_SCORE_BANDWIDTH_WEIGHT": "带宽权重；带宽超过参考值后收益逐渐饱和",
     "PROXY_SCORE_HTTP_LATENCY_WEIGHT": 0.40,
@@ -245,7 +263,7 @@
     "PROXY_SCORE_JITTER_WEIGHT": 0.20,
     "_comment_PROXY_SCORE_JITTER_WEIGHT": "HTTP 尾部抖动权重",
     "PROXY_SCORE_TCP_LATENCY_WEIGHT": 0.10,
-    "_comment_PROXY_SCORE_TCP_LATENCY_WEIGHT": "TCP 建连延迟权重",
+    "_comment_PROXY_SCORE_TCP_LATENCY_WEIGHT": "直连模式为TCP建连延迟权重；链式模式为全链路成功率权重",
     "PROXY_SPEED_SCALE_MBPS": 40.0,
     "_comment_PROXY_SPEED_SCALE_MBPS": "带宽收益递减尺度；40Mbps 后继续加速但加分逐步减小",
     "PROXY_HTTP_LATENCY_REFERENCE_MS": 180.0,
