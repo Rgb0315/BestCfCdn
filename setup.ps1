@@ -21,7 +21,7 @@ try {
 } catch { }
 
 $TaskName = "Cloudflare IP 优选"
-$TaskIntervalMinutes = 30
+$TaskIntervalMinutes = 60
 $PythonExePath = $null
 $ScriptDir = $PSScriptRoot
 $PythonScriptPath = Join-Path $ScriptDir "scheduled_run.py"
@@ -527,7 +527,7 @@ if (-not $scheduleEnabled) {
         $rootFolder = $taskService.GetFolder("\")
 
         $taskDefinition = $taskService.NewTask(0)
-        $taskDefinition.RegistrationInfo.Description = "Cloudflare CDN 中国忙时每30分钟、非忙时每60分钟优选"
+        $taskDefinition.RegistrationInfo.Description = "Cloudflare CDN 中国忙时每60分钟、非忙时每180分钟优选"
         $taskDefinition.Principal.LogonType = 5
         $taskDefinition.Principal.RunLevel = 1
         $taskDefinition.Settings.Enabled = $true
@@ -552,7 +552,7 @@ if (-not $scheduleEnabled) {
 
         $rootFolder.RegisterTaskDefinition($TaskName, $taskDefinition, 6, "SYSTEM", $null, 5) | Out-Null
         $taskCreated = $true
-        Write-Host "✅ 计划任务创建成功（COM，SYSTEM，每30分钟检查）" -ForegroundColor Green
+        Write-Host "✅ 计划任务创建成功（COM，SYSTEM，每60分钟检查）" -ForegroundColor Green
     } catch {
         Write-Host "⚠️ COM 创建失败：$_" -ForegroundColor Yellow
         Write-Host "  尝试 schtasks 备用方式..." -ForegroundColor Yellow
