@@ -77,8 +77,8 @@ class SetupUpdateIntegrationTests(unittest.TestCase):
             "OUTPUT_FILE": "ip.local.txt",
             "GITHUB_SYNC_REMOTE_PATH": "ip.txt",
             "EXISTING_SETTING": f"default-v{version}",
-            "SCHEDULE_BUSY_INTERVAL_MINUTES": 30 if version == 1 else 60,
-            "SCHEDULE_OFFPEAK_INTERVAL_MINUTES": 60 if version == 1 else 180,
+            "SCHEDULE_BUSY_INTERVAL_MINUTES": 60 if version == 1 else 90,
+            "SCHEDULE_OFFPEAK_INTERVAL_MINUTES": 180,
         }
         if version >= 2:
             template["NEW_SETTING"] = 42
@@ -139,8 +139,8 @@ class SetupUpdateIntegrationTests(unittest.TestCase):
             "OUTPUT_FILE": "ip.txt",
             "GITHUB_SYNC_REMOTE_PATH": "ip.txt",
             "EXISTING_SETTING": "custom-value",
-            "SCHEDULE_BUSY_INTERVAL_MINUTES": 30,
-            "SCHEDULE_OFFPEAK_INTERVAL_MINUTES": 60,
+            "SCHEDULE_BUSY_INTERVAL_MINUTES": 60,
+            "SCHEDULE_OFFPEAK_INTERVAL_MINUTES": 180,
         }
         (self.client / "config.json").write_text(
             json.dumps(local_config, ensure_ascii=False, indent=4) + "\n",
@@ -167,7 +167,7 @@ class SetupUpdateIntegrationTests(unittest.TestCase):
         self.assertEqual("custom-value", merged["EXISTING_SETTING"])
         self.assertEqual(42, merged["NEW_SETTING"])
         self.assertEqual("ip.local.txt", merged["OUTPUT_FILE"])
-        self.assertEqual(60, merged["SCHEDULE_BUSY_INTERVAL_MINUTES"])
+        self.assertEqual(90, merged["SCHEDULE_BUSY_INTERVAL_MINUTES"])
         self.assertEqual(180, merged["SCHEDULE_OFFPEAK_INTERVAL_MINUTES"])
 
         backups = sorted(self.home.glob("bestcfcdn_backup_*"))

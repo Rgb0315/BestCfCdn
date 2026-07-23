@@ -43,10 +43,10 @@ class ConfigDefaultsTests(unittest.TestCase):
             config = json.load(file)
         self.assertTrue(config["ENABLE_SCHEDULED_TASK"])
 
-    def test_schedule_defaults_use_sixty_and_one_eighty_minutes(self):
+    def test_schedule_defaults_use_ninety_and_one_eighty_minutes(self):
         with self.CONFIG_TEMPLATE.open("r", encoding="utf-8-sig") as file:
             config = json.load(file)
-        self.assertEqual(60, config["SCHEDULE_BUSY_INTERVAL_MINUTES"])
+        self.assertEqual(90, config["SCHEDULE_BUSY_INTERVAL_MINUTES"])
         self.assertEqual(180, config["SCHEDULE_OFFPEAK_INTERVAL_MINUTES"])
 
     def test_update_backup_retention_defaults_to_one(self):
@@ -193,13 +193,13 @@ class SetupScriptTests(unittest.TestCase):
         self.assertIn('child_env.setdefault("PYTHONUTF8", "1")', script)
         self.assertIn('child_env.setdefault("PYTHONIOENCODING", "utf-8")', script)
 
-    def test_setup_wakes_scheduler_every_sixty_minutes(self):
+    def test_setup_wakes_scheduler_every_thirty_minutes(self):
         windows = (PROJECT_ROOT / "setup.ps1").read_text(encoding="utf-8-sig")
         linux = (PROJECT_ROOT / "setup.sh").read_text(encoding="utf-8")
-        self.assertIn("$TaskIntervalMinutes = 60", windows)
+        self.assertIn("$TaskIntervalMinutes = 30", windows)
         self.assertIn('$trigger.Repetition.Interval = "PT${TaskIntervalMinutes}M"', windows)
-        self.assertIn("TASK_INTERVAL_MINUTES=60", linux)
-        self.assertIn('CRON_CMD="0 * * * *', linux)
+        self.assertIn("TASK_INTERVAL_MINUTES=30", linux)
+        self.assertIn('CRON_CMD="*/30 * * * *', linux)
 
     def test_linux_setup_uses_venv_and_preserves_gitignore(self):
         script = (PROJECT_ROOT / "setup.sh").read_text(encoding="utf-8")
@@ -311,16 +311,16 @@ class ScheduleTests(unittest.TestCase):
     CONFIG = {
         "SCHEDULE_CF_BUSY_START_HOUR": 18,
         "SCHEDULE_CF_BUSY_END_HOUR": 24,
-        "SCHEDULE_BUSY_INTERVAL_MINUTES": 60,
+        "SCHEDULE_BUSY_INTERVAL_MINUTES": 90,
         "SCHEDULE_OFFPEAK_INTERVAL_MINUTES": 180,
     }
 
-    def test_busy_period_runs_on_the_hour(self):
-        expected = {0: True, 15: False, 30: False, 45: False}
+    def test_busy_period_runs_every_ninety_minutes_from_eighteen_hundred(self):
+        expected = {0: True, 15: False, 30: False, 45: False, 90: True}
         for minute, should_run in expected.items():
-            now = datetime(2026, 7, 13, 22, minute, tzinfo=timezone.utc)
+            now = datetime(2026, 7, 13, 18 + minute // 60, minute % 60, tzinfo=timezone.utc)
             self.assertEqual(
-                (should_run, True, 60), scheduled_run.should_run(now, self.CONFIG)
+                (should_run, True, 90), scheduled_run.should_run(now, self.CONFIG)
             )
 
     def test_offpeak_runs_every_three_hours(self):
@@ -329,6 +329,20 @@ class ScheduleTests(unittest.TestCase):
             now = datetime(2026, 7, 13, 9 + minute // 60, minute % 60, tzinfo=timezone.utc)
             self.assertEqual(
                 (should_run, False, 180), scheduled_run.should_run(now, self.CONFIG)
+            )
+
+    def test_schedule_uses_the_expected_daily_time_grid(self):
+        expected_run_minutes = {
+            0, 180, 360, 540, 720, 900,  # 00:00–15:00, every three hours
+            1080, 1170, 1260, 1350,  # 18:00–22:30, every ninety minutes
+        }
+        for minute in range(0, 24 * 60, 15):
+            now = datetime(2026, 7, 13, minute // 60, minute % 60, tzinfo=timezone.utc)
+            expected_busy = minute >= 18 * 60
+            expected_interval = 90 if expected_busy else 180
+            self.assertEqual(
+                (minute in expected_run_minutes, expected_busy, expected_interval),
+                scheduled_run.should_run(now, self.CONFIG),
             )
 
     @mock.patch("scheduled_run.subprocess.call")

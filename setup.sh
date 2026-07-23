@@ -11,7 +11,7 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-TASK_INTERVAL_MINUTES=60
+TASK_INTERVAL_MINUTES=30
 PYTHON_SCRIPT="scheduled_run.py"
 TUNA_PYPI="https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple"
 OFFICIAL_PYPI="https://pypi.org/simple"
@@ -396,8 +396,8 @@ echo -e "✅ 已保留原有 .gitignore，并补齐运行时条目"
 
 # ---------- 5. 按配置创建或清理 cron 计划任务 ----------
 escaped_dir=${SCRIPT_DIR//\"/\\\"}
-CRON_COMMENT="# Cloudflare IP 优选工具（中国CF CDN忙时60分钟/非忙时180分钟）"
-CRON_CMD="0 * * * * cd \"$escaped_dir\" && \"$PYTHON_PATH\" \"$escaped_dir/$PYTHON_SCRIPT\" >> \"$escaped_dir/cron.log\" 2>&1"
+CRON_COMMENT="# Cloudflare IP 优选工具（中国CF CDN忙时90分钟/非忙时180分钟）"
+CRON_CMD="*/30 * * * * cd \"$escaped_dir\" && \"$PYTHON_PATH\" \"$escaped_dir/$PYTHON_SCRIPT\" >> \"$escaped_dir/cron.log\" 2>&1"
 
 EXISTING_CRONTAB=""
 CLEANED_CRONTAB=""
@@ -407,7 +407,7 @@ if command_exists crontab; then
 fi
 
 if [[ $SCHEDULE_ENABLED == true ]]; then
-    echo -e "${GREEN}[5/5] 配置定时任务（每60分钟检查峰谷策略）...${NC}"
+    echo -e "${GREEN}[5/5] 配置定时任务（每30分钟检查峰谷策略）...${NC}"
     (printf '%s\n' "$CLEANED_CRONTAB"; echo "$CRON_COMMENT"; echo "$CRON_CMD") \
         | write_target_crontab
     echo -e "${GREEN}✅ 已为 $TARGET_USER 更新 cron 任务${NC}"
