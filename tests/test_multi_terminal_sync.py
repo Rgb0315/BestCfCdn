@@ -244,7 +244,12 @@ class SetupScriptTests(unittest.TestCase):
     def test_sensitive_and_local_runtime_files_are_ignored(self):
         ignored = set((PROJECT_ROOT / ".gitignore").read_text().splitlines())
         self.assertTrue(
-            {"config.json", "ip.local.txt", "valid_tokens.txt"}.issubset(ignored)
+            {
+                ".sing-box/",
+                "config.json",
+                "ip.local.txt",
+                "valid_tokens.txt",
+            }.issubset(ignored)
         )
 
     def test_bandwidth_failure_does_not_restore_rejected_candidates(self):

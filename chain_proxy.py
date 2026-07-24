@@ -1,21 +1,34 @@
 """CfGfwAX 链式订阅解析与临时 sing-box 运行时。"""
 
 import base64
+import hashlib
 import ipaddress
 import json
 import os
+import platform
 import shutil
 import socket
+import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
+import zipfile
 from dataclasses import dataclass
+from urllib.error import URLError
 from urllib.parse import parse_qsl, unquote, urlsplit
+from urllib.request import Request, urlopen
 
 
 class ChainProxyError(RuntimeError):
     pass
+
+
+SING_BOX_RELEASE_API = (
+    "https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+)
+MAX_CORE_DOWNLOAD_BYTES = 128 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -268,6 +281,275 @@ def build_sing_box_config(template, proxy_ports):
     return config
 
 
+def _sing_box_asset(version, system=None, machine=None):
+    system = (system or platform.system()).lower()
+    machine = (machine or platform.machine()).lower()
+    systems = {"windows": "windows", "linux": "linux", "darwin": "darwin"}
+    architectures = {
+        "x86_64": "amd64",
+        "amd64": "amd64",
+        "i386": "386",
+        "i686": "386",
+        "x86": "386",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+        "armv7l": "armv7",
+        "armv6l": "armv6",
+        "armv5l": "armv5",
+        "riscv64": "riscv64",
+        "s390x": "s390x",
+        "ppc64le": "ppc64le",
+        "loongarch64": "loong64",
+        "loong64": "loong64",
+    }
+    os_name = systems.get(system)
+    arch = architectures.get(machine)
+    if not os_name or not arch:
+        raise ChainProxyError(
+            f"sing-box 暂不支持自动下载到当前设备：{system}/{machine}"
+        )
+    if os_name in {"windows", "darwin"} and arch not in {"amd64", "arm64", "386"}:
+        raise ChainProxyError(
+            f"sing-box 暂不支持自动下载到当前设备：{system}/{machine}"
+        )
+    extension = "zip" if os_name == "windows" else "tar.gz"
+    return (
+        f"sing-box-{version}-{os_name}-{arch}.{extension}",
+        "sing-box.exe" if os_name == "windows" else "sing-box",
+    )
+
+
+def _copy_limited(source, destination):
+    total = 0
+    while chunk := source.read(1024 * 1024):
+        total += len(chunk)
+        if total > MAX_CORE_DOWNLOAD_BYTES:
+            raise ChainProxyError("sing-box 下载或解压内容超过安全大小限制")
+        destination.write(chunk)
+
+
+def _download_verified_asset(url, destination, expected_size, expected_digest):
+    curl_path = shutil.which("curl")
+    if curl_path:
+        try:
+            downloaded = subprocess.run(
+                [
+                    curl_path,
+                    "--location",
+                    "--fail",
+                    "--silent",
+                    "--show-error",
+                    "--retry",
+                    "5",
+                    "--retry-delay",
+                    "2",
+                    "--retry-all-errors",
+                    "--continue-at",
+                    "-",
+                    "--max-filesize",
+                    str(MAX_CORE_DOWNLOAD_BYTES),
+                    "--output",
+                    destination,
+                    url,
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=600,
+                creationflags=(
+                    subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+                ),
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            downloaded = None
+        if downloaded and downloaded.returncode == 0:
+            actual_size = os.path.getsize(destination)
+            if actual_size != expected_size:
+                raise ChainProxyError(
+                    f"sing-box 下载不完整：预期 {expected_size} 字节，"
+                    f"实际 {actual_size} 字节"
+                )
+            hasher = hashlib.sha256()
+            with open(destination, "rb") as archive:
+                while chunk := archive.read(1024 * 1024):
+                    hasher.update(chunk)
+            actual_digest = hasher.hexdigest()
+            if actual_digest.lower() != expected_digest.lower():
+                raise ChainProxyError("sing-box 下载文件 SHA-256 校验失败")
+            return
+
+    last_size = 0
+    for attempt in range(1, 6):
+        hasher = hashlib.sha256()
+        total = 0
+        try:
+            with open(destination, "wb") as archive, urlopen(
+                Request(url, headers={"User-Agent": "BestCfCdn"}),
+                timeout=120,
+            ) as response:
+                while chunk := response.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > MAX_CORE_DOWNLOAD_BYTES:
+                        raise ChainProxyError("sing-box 下载内容超过安全大小限制")
+                    archive.write(chunk)
+                    hasher.update(chunk)
+        except (OSError, URLError):
+            if attempt == 5:
+                raise
+            continue
+        last_size = total
+        if total != expected_size:
+            if attempt < 5:
+                continue
+            raise ChainProxyError(
+                f"sing-box 下载不完整：预期 {expected_size} 字节，"
+                f"实际 {last_size} 字节，已重试 5 次"
+            )
+        if hasher.hexdigest().lower() != expected_digest.lower():
+            raise ChainProxyError("sing-box 下载文件 SHA-256 校验失败")
+        return
+
+
+def _download_sing_box(base_dir):
+    install_dir = os.path.join(base_dir, ".sing-box")
+    os.makedirs(install_dir, exist_ok=True)
+    archive_path = executable_temp = ""
+    try:
+        request = Request(
+            SING_BOX_RELEASE_API,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "BestCfCdn",
+            },
+        )
+        with urlopen(request, timeout=30) as response:
+            release_bytes = response.read(1024 * 1024 + 1)
+        if len(release_bytes) > 1024 * 1024:
+            raise ChainProxyError("sing-box 发布信息超过安全大小限制")
+        release = json.loads(release_bytes.decode("utf-8"))
+        if not isinstance(release, dict) or not isinstance(
+            release.get("assets"), list
+        ):
+            raise ChainProxyError("sing-box 官方发布信息格式无效")
+        version = str(release.get("tag_name", "")).removeprefix("v")
+        version_parts = version.split(".")
+        if (
+            len(version_parts) < 2
+            or not all(part.isdigit() for part in version_parts)
+            or tuple(map(int, version_parts[:2])) < (1, 13)
+        ):
+            raise ChainProxyError("sing-box 官方稳定版版本信息无效或低于 1.13")
+
+        asset_name, executable_name = _sing_box_asset(version)
+        asset = next(
+            (
+                item
+                for item in release["assets"]
+                if isinstance(item, dict)
+                if item.get("name") == asset_name
+            ),
+            None,
+        )
+        if not asset:
+            raise ChainProxyError(f"sing-box 官方发布缺少当前设备资产：{asset_name}")
+        download_url = str(asset.get("browser_download_url", ""))
+        parsed_url = urlsplit(download_url)
+        if (
+            parsed_url.scheme != "https"
+            or parsed_url.hostname != "github.com"
+            or not parsed_url.path.startswith(
+                "/SagerNet/sing-box/releases/download/"
+            )
+        ):
+            raise ChainProxyError("sing-box 官方资产下载地址无效")
+        digest = str(asset.get("digest", ""))
+        if not digest.startswith("sha256:") or len(digest) != 71:
+            raise ChainProxyError("sing-box 官方资产缺少有效 SHA-256 摘要")
+        expected_size = asset.get("size")
+        if (
+            not isinstance(expected_size, int)
+            or expected_size <= 0
+            or expected_size > MAX_CORE_DOWNLOAD_BYTES
+        ):
+            raise ChainProxyError("sing-box 官方资产大小信息无效")
+
+        archive = tempfile.NamedTemporaryFile(
+            prefix="download-", suffix=f"-{asset_name}", dir=install_dir, delete=False
+        )
+        archive_path = archive.name
+        archive.close()
+        _download_verified_asset(
+            download_url, archive_path, expected_size, digest[7:]
+        )
+
+        executable = tempfile.NamedTemporaryFile(
+            prefix="sing-box-", dir=install_dir, delete=False
+        )
+        executable_temp = executable.name
+        with executable:
+            if asset_name.endswith(".zip"):
+                with zipfile.ZipFile(archive_path) as bundle:
+                    members = [
+                        name
+                        for name in bundle.namelist()
+                        if not name.endswith("/")
+                        and name.replace("\\", "/").rsplit("/", 1)[-1]
+                        == executable_name
+                    ]
+                    if len(members) != 1:
+                        raise ChainProxyError("sing-box 压缩包内的可执行文件不唯一")
+                    with bundle.open(members[0]) as source:
+                        _copy_limited(source, executable)
+            else:
+                with tarfile.open(archive_path, "r:gz") as bundle:
+                    members = [
+                        member
+                        for member in bundle.getmembers()
+                        if member.isfile()
+                        and member.name.replace("\\", "/").rsplit("/", 1)[-1]
+                        == executable_name
+                    ]
+                    if len(members) != 1:
+                        raise ChainProxyError("sing-box 压缩包内的可执行文件不唯一")
+                    with bundle.extractfile(members[0]) as source:
+                        _copy_limited(source, executable)
+
+        mode = os.stat(executable_temp).st_mode
+        os.chmod(
+            executable_temp,
+            mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
+        )
+        target = os.path.join(install_dir, executable_name)
+        if not os.path.isfile(target):
+            try:
+                os.replace(executable_temp, target)
+                executable_temp = ""
+            except PermissionError:
+                if not os.path.isfile(target):
+                    raise
+        return target
+    except ChainProxyError:
+        raise
+    except (
+        OSError,
+        URLError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+        tarfile.TarError,
+        zipfile.BadZipFile,
+    ) as exc:
+        raise ChainProxyError(f"自动下载 sing-box 失败：{exc}") from exc
+    finally:
+        for path in (archive_path, executable_temp):
+            if path:
+                try:
+                    os.remove(path)
+                except FileNotFoundError:
+                    pass
+
+
 def resolve_sing_box_path(configured_path="", base_dir=None):
     requested = str(configured_path or "").strip()
     if requested:
@@ -280,11 +562,18 @@ def resolve_sing_box_path(configured_path="", base_dir=None):
         found = shutil.which(requested)
     else:
         found = shutil.which("sing-box")
-    if not found:
-        raise ChainProxyError(
-            "未找到 sing-box；请安装后加入 PATH，或设置 CHAIN_PROXY_CORE_PATH"
-        )
-    return found
+    if found:
+        return found
+
+    project_dir = os.path.abspath(base_dir or os.path.dirname(__file__))
+    executable_name = "sing-box.exe" if platform.system() == "Windows" else "sing-box"
+    local_path = os.path.join(project_dir, ".sing-box", executable_name)
+    if os.path.isfile(local_path):
+        return local_path
+    print("未找到 sing-box，正在根据当前设备下载官方稳定版...")
+    local_path = _download_sing_box(project_dir)
+    print(f"sing-box 已安装到：{local_path}")
+    return local_path
 
 
 def allocate_local_ports(nodes):

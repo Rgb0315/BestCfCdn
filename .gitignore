@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+.sing-box/
 .cfnb_schedule.lock
 cron.log
 config.json

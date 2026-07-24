@@ -1,12 +1,20 @@
 import base64
+import hashlib
+import io
 import json
+import os
+import tempfile
 import unittest
+import zipfile
 from urllib.parse import urlencode
+from unittest import mock
 
 from chain_proxy import (
     ChainProxyError,
+    _sing_box_asset,
     build_sing_box_config,
     extract_chain_template,
+    resolve_sing_box_path,
 )
 
 
@@ -212,6 +220,93 @@ class ChainProxyTests(unittest.TestCase):
                     extra={"type": "xhttp", "mode": "stream-one"},
                 ),
                 f"https://{DOMAIN}/subscribe",
+            )
+
+    def test_device_environment_selects_the_official_asset(self):
+        self.assertEqual(
+            _sing_box_asset("1.13.12", "Windows", "AMD64"),
+            ("sing-box-1.13.12-windows-amd64.zip", "sing-box.exe"),
+        )
+        self.assertEqual(
+            _sing_box_asset("1.13.12", "Linux", "aarch64"),
+            ("sing-box-1.13.12-linux-arm64.tar.gz", "sing-box"),
+        )
+
+    def test_missing_core_downloads_verified_windows_asset_into_project(self):
+        executable = b"mock sing-box executable"
+        archive_buffer = io.BytesIO()
+        with zipfile.ZipFile(archive_buffer, "w") as bundle:
+            bundle.writestr(
+                "sing-box-1.13.12-windows-amd64/sing-box.exe", executable
+            )
+        archive = archive_buffer.getvalue()
+        release = json.dumps(
+            {
+                "tag_name": "v1.13.12",
+                "assets": [
+                    {
+                        "name": "sing-box-1.13.12-windows-amd64.zip",
+                        "browser_download_url": (
+                            "https://github.com/SagerNet/sing-box/releases/download/"
+                            "v1.13.12/sing-box-1.13.12-windows-amd64.zip"
+                        ),
+                        "digest": f"sha256:{hashlib.sha256(archive).hexdigest()}",
+                        "size": len(archive),
+                    }
+                ],
+            }
+        ).encode()
+
+        with tempfile.TemporaryDirectory() as project_dir, mock.patch(
+            "chain_proxy.shutil.which", return_value=None
+        ), mock.patch("chain_proxy.platform.system", return_value="Windows"), mock.patch(
+            "chain_proxy.platform.machine", return_value="AMD64"
+        ), mock.patch(
+            "chain_proxy.urlopen",
+            side_effect=[
+                io.BytesIO(release),
+                io.BytesIO(archive[:100]),
+                io.BytesIO(archive),
+            ],
+        ):
+            path = resolve_sing_box_path("", project_dir)
+
+            self.assertEqual(
+                path, os.path.join(project_dir, ".sing-box", "sing-box.exe")
+            )
+            with open(path, "rb") as installed:
+                self.assertEqual(installed.read(), executable)
+
+    def test_checksum_mismatch_does_not_install_core(self):
+        release = json.dumps(
+            {
+                "tag_name": "v1.13.12",
+                "assets": [
+                    {
+                        "name": "sing-box-1.13.12-linux-amd64.tar.gz",
+                        "browser_download_url": (
+                            "https://github.com/SagerNet/sing-box/releases/download/"
+                            "v1.13.12/sing-box-1.13.12-linux-amd64.tar.gz"
+                        ),
+                        "digest": f"sha256:{'0' * 64}",
+                        "size": len(b"corrupt"),
+                    }
+                ],
+            }
+        ).encode()
+
+        with tempfile.TemporaryDirectory() as project_dir, mock.patch(
+            "chain_proxy.shutil.which", return_value=None
+        ), mock.patch("chain_proxy.platform.system", return_value="Linux"), mock.patch(
+            "chain_proxy.platform.machine", return_value="x86_64"
+        ), mock.patch(
+            "chain_proxy.urlopen",
+            side_effect=[io.BytesIO(release), io.BytesIO(b"corrupt")],
+        ):
+            with self.assertRaisesRegex(ChainProxyError, "SHA-256 校验失败"):
+                resolve_sing_box_path("", project_dir)
+            self.assertFalse(
+                os.path.exists(os.path.join(project_dir, ".sing-box", "sing-box"))
             )
 
 

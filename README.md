@@ -65,7 +65,7 @@ bash setup.sh
 - `ENABLE_WXPUSHER` - 启用异常通知时填写 App Token 和 UID
 - `CHAIN_PROXY_TEST_ENABLED` - `true` 启用链式测速；默认 `false`，普通用户保持原流程
 - `CHAIN_PROXY_SUBSCRIPTION_URL` - CfGfwAX 的 mixed 订阅地址，例如 `https://代理域名/sub?token=***&target=mixed`
-- `CHAIN_PROXY_CORE_PATH` - sing-box 可执行文件路径；留空时自动从 `PATH` 查找
+- `CHAIN_PROXY_CORE_PATH` - sing-box 可执行文件路径；留空时先查找 `PATH` 和专案内 `.sing-box/`，仍缺失则按系统与 CPU 架构自动下载官方稳定版并校验 SHA-256
 - `CHAIN_PROXY_TEST_SAMPLES` / `CHAIN_PROXY_MIN_SUCCESS_RATE` - 默认每节点测试 3 次，至少成功 2 次
 - `CHAIN_PROXY_WORKERS` - 默认低并发 4，避免共享 SOCKS5 拥塞干扰排名
 
@@ -165,7 +165,7 @@ bash setup.sh
 - `ENABLE_WXPUSHER` - 啟用異常通知時填寫 App Token 和 UID
 - `CHAIN_PROXY_TEST_ENABLED` - `true` 啟用鏈式測速；預設 `false`，一般使用者維持原流程
 - `CHAIN_PROXY_SUBSCRIPTION_URL` - CfGfwAX mixed 訂閱地址，例如 `https://代理網域/sub?token=***&target=mixed`
-- `CHAIN_PROXY_CORE_PATH` - sing-box 執行檔路徑；留空時自動從 `PATH` 尋找
+- `CHAIN_PROXY_CORE_PATH` - sing-box 執行檔路徑；留空時先尋找 `PATH` 與專案內 `.sing-box/`，仍缺少則依系統與 CPU 架構自動下載官方穩定版並驗證 SHA-256
 - `CHAIN_PROXY_TEST_SAMPLES` / `CHAIN_PROXY_MIN_SUCCESS_RATE` - 預設每節點測試 3 次，至少成功 2 次
 - `CHAIN_PROXY_WORKERS` - 預設低併發 4，避免共用 SOCKS5 壅塞干擾排名
 
@@ -265,7 +265,7 @@ The first run only creates `config.json` and exits. Edit the configuration befor
 - `ENABLE_WXPUSHER` - When enabling error notifications, fill in the App Token and UID
 - `CHAIN_PROXY_TEST_ENABLED` - Set to `true` to enable chain testing; the default `false` preserves the original flow
 - `CHAIN_PROXY_SUBSCRIPTION_URL` - CfGfwAX mixed subscription URL, for example `https://proxy.example/sub?token=***&target=mixed`
-- `CHAIN_PROXY_CORE_PATH` - Path to the sing-box executable; leave empty to search `PATH`
+- `CHAIN_PROXY_CORE_PATH` - Path to the sing-box executable; leave empty to search `PATH` and the project-local `.sing-box/`, then download the official stable build for the detected OS/CPU and verify its SHA-256 if still missing
 - `CHAIN_PROXY_TEST_SAMPLES` / `CHAIN_PROXY_MIN_SUCCESS_RATE` - Three samples per endpoint by default, with at least two successes required
 - `CHAIN_PROXY_WORKERS` - Low concurrency of four by default to avoid bias from saturating the shared SOCKS5 server
 
